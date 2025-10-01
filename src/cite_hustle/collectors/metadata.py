@@ -1,11 +1,14 @@
 """CrossRef metadata collector for academic articles"""
-from crossref.restful import Works, Etiquette
+from crossref_commons.iteration import iterate_publications_as_json
 import concurrent.futures
 import json
+import re
+import html
 from pathlib import Path
 from typing import List, Dict, Optional
 from tenacity import retry, wait_exponential, stop_after_attempt
 from tqdm import tqdm
+from bs4 import BeautifulSoup
 
 from cite_hustle.config import settings
 from cite_hustle.collectors.journals import Journal
@@ -26,15 +29,32 @@ class MetadataCollector:
         self.repo = repo
         self.cache_dir = cache_dir or settings.cache_dir
         self.cache_dir.mkdir(exist_ok=True, parents=True)
+    
+    @staticmethod
+    def clean_title(title: str) -> str:
+        """
+        Clean HTML tags and entities from article titles
         
-        # Setup CrossRef API with etiquette
-        my_etiquette = Etiquette(
-            'Academic Researcher', 
-            'cite-hustle', 
-            'https://github.com/CasparDP/cite-hustle',
-            settings.crossref_email
-        )
-        self.works = Works(etiquette=my_etiquette)
+        Args:
+            title: Raw title string that may contain HTML
+            
+        Returns:
+            Cleaned title string
+        """
+        if not title:
+            return title
+        
+        # Use BeautifulSoup to remove HTML tags
+        soup = BeautifulSoup(title, 'html.parser')
+        text = soup.get_text()
+        
+        # Decode HTML entities (e.g., &amp; -> &, &lt; -> <)
+        text = html.unescape(text)
+        
+        # Clean up extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
     
     @retry(
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -62,15 +82,22 @@ class MetadataCollector:
                 print(f"⚠️  Corrupted cache file, re-fetching: {cache_file}")
                 cache_file.unlink()
         
-        # Fetch from CrossRef API
-        query = self.works.filter(
-            issn=issn,
-            from_pub_date=f'{year}-01-01',
-            until_pub_date=f'{year}-12-31'
-        )
-        
+        # Fetch from CrossRef API using new library
         try:
-            articles = list(query.select('DOI', 'title', 'author', 'issued', 'ISSN', 'publisher'))
+            # Set email for polite API usage via environment variable
+            import os
+            os.environ['CR_API_MAILTO'] = settings.crossref_email
+            
+            filter_params = {
+                'issn': issn,
+                'from-pub-date': f'{year}-01-01',
+                'until-pub-date': f'{year}-12-31'
+            }
+            
+            # Collect all articles
+            articles = []
+            for article in iterate_publications_as_json(filter=filter_params):
+                articles.append(article)
             
             # Cache the results
             with open(cache_file, 'w', encoding='utf-8') as f:
@@ -106,7 +133,10 @@ class MetadataCollector:
             if not doi:
                 continue
                 
-            title = ' '.join(article.get('title', ['No Title Available']))
+            # Get title and clean HTML tags/entities
+            raw_title = ' '.join(article.get('title', ['No Title Available']))
+            title = self.clean_title(raw_title)
+            
             year = article.get('issued', {}).get('date-parts', [[None]])[0][0]
             
             if not year:

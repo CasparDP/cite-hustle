@@ -1,12 +1,16 @@
-from crossref.restful import Works, Etiquette
+from crossref_commons.retrieval import get_publication_as_json
+from crossref_commons.iteration import iterate_publications_as_json
 import concurrent.futures
 import time
 import csv
 import os
 import json
+import re
+import html
 from pathlib import Path
 from tenacity import retry, wait_exponential, stop_after_attempt
 from tqdm import tqdm
+from bs4 import BeautifulSoup
 
 # Journal dictionary remains the same
 star_journals_dict = {
@@ -39,9 +43,6 @@ MAX_WORKERS = 3  # Adjust based on API rate limits
 CACHE_DIR.mkdir(exist_ok=True, parents=True)
 METADATA_DIR.mkdir(exist_ok=True, parents=True)
 
-my_etiquette = Etiquette('Student RA', 'alpha1', 'My Project URL', 'spiny.bubble0v@icloud.com')
-works = Works(etiquette=my_etiquette)
-
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10),
        stop=stop_after_attempt(3))
 def fetch_articles_by_issn(year, issn):
@@ -52,12 +53,21 @@ def fetch_articles_by_issn(year, issn):
         with open(cache_file, 'r') as f:
             return json.load(f)
     
-    query = works.filter(issn=issn, 
-                        from_pub_date=f'{year}-01-01',
-                        until_pub_date=f'{year}-12-31')
-    
     try:
-        articles = list(query.select('DOI', 'title', 'author', 'issued', 'ISSN', 'publisher'))
+        # Set email for polite API usage via environment variable
+        os.environ['CR_API_MAILTO'] = 'spiny.bubble0v@icloud.com'
+        
+        # Use new crossref_commons API
+        filter_params = {
+            'issn': issn,
+            'from-pub-date': f'{year}-01-01',
+            'until-pub-date': f'{year}-12-31'
+        }
+        
+        # Collect all articles using iterate_publications_as_json
+        articles = []
+        for article in iterate_publications_as_json(filter=filter_params):
+            articles.append(article)
         
         # Cache the results
         with open(cache_file, 'w') as f:
@@ -72,7 +82,8 @@ def process_article_batch(articles):
     rows = []
     for article in articles:
         doi = article.get('DOI', '')
-        title = ' '.join(article.get('title', ['No Title Available']))
+        raw_title = ' '.join(article.get('title', ['No Title Available']))
+        title = clean_title(raw_title)
         year = article.get('issued', {}).get('date-parts', [[None]])[0][0]
         issn = ', '.join(article.get('ISSN', []))
         publisher = article.get('publisher', 'Unknown')

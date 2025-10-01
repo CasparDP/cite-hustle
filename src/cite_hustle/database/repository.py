@@ -30,11 +30,14 @@ class ArticleRepository:
             return
         
         df = pd.DataFrame(articles)
+        # Specify columns explicitly to avoid timestamp column issues
         self.conn.execute("""
-            INSERT INTO articles 
-            SELECT * FROM df
+            INSERT INTO articles (doi, title, authors, year, journal_issn, journal_name, publisher)
+            SELECT doi, title, authors, year, journal_issn, journal_name, publisher FROM df
             ON CONFLICT (doi) DO UPDATE SET
-                updated_at = CURRENT_TIMESTAMP
+                title = EXCLUDED.title,
+                authors = EXCLUDED.authors,
+                updated_at = now()
         """)
     
     def get_article_count(self) -> int:
@@ -172,30 +175,66 @@ class ArticleRepository:
         
         return stats
     
-    # Search
+    # Search with FTS
     def search_by_title(self, query: str, limit: int = 50) -> List[Dict]:
-        """Full-text search on article titles"""
-        try:
-            result = self.conn.execute("""
-                SELECT a.doi, a.title, a.authors, a.year, a.journal_name,
-                       fts_main_articles.match_bm25(a.doi, ?) AS score
-                FROM articles a
-                WHERE fts_main_articles.match_bm25(a.doi, ?) IS NOT NULL
-                ORDER BY score DESC
-                LIMIT ?
-            """, [query, query, limit]).fetchall()
-            
-            return [dict(zip(['doi', 'title', 'authors', 'year', 'journal', 'score'], row)) 
-                    for row in result]
-        except Exception as e:
-            print(f"Search error (FTS may not be enabled): {e}")
-            # Fallback to LIKE search
-            result = self.conn.execute("""
-                SELECT doi, title, authors, year, journal_name, 0 as score
-                FROM articles
-                WHERE title ILIKE ?
-                LIMIT ?
-            """, [f'%{query}%', limit]).fetchall()
-            
-            return [dict(zip(['doi', 'title', 'authors', 'year', 'journal', 'score'], row)) 
-                    for row in result]
+        """
+        Full-text search on article titles using DuckDB FTS extension
+        
+        Uses BM25 ranking for relevance scoring.
+        """
+        result = self.conn.execute("""
+            SELECT a.doi, a.title, a.authors, a.year, a.journal_name,
+                   fts_main_articles.match_bm25(a.doi, ?) AS score
+            FROM articles a
+            WHERE fts_main_articles.match_bm25(a.doi, ?) IS NOT NULL
+            ORDER BY score DESC
+            LIMIT ?
+        """, [query, query, limit]).fetchall()
+        
+        return [dict(zip(['doi', 'title', 'authors', 'year', 'journal', 'score'], row)) 
+                for row in result]
+    
+    def search_by_abstract(self, query: str, limit: int = 50) -> List[Dict]:
+        """
+        Full-text search on abstracts using DuckDB FTS extension
+        
+        Uses BM25 ranking for relevance scoring.
+        """
+        result = self.conn.execute("""
+            SELECT s.doi, a.title, s.abstract, a.year, a.journal_name,
+                   fts_main_ssrn_pages.match_bm25(s.doi, ?) AS score
+            FROM ssrn_pages s
+            JOIN articles a ON s.doi = a.doi
+            WHERE fts_main_ssrn_pages.match_bm25(s.doi, ?) IS NOT NULL
+            ORDER BY score DESC
+            LIMIT ?
+        """, [query, query, limit]).fetchall()
+        
+        return [dict(zip(['doi', 'title', 'abstract', 'year', 'journal', 'score'], row)) 
+                for row in result]
+    
+    def search_by_author(self, author_name: str, limit: int = 50) -> List[Dict]:
+        """
+        Search articles by author name using pattern matching
+        
+        Note: Author search uses LIKE matching, not FTS.
+        """
+        result = self.conn.execute("""
+            SELECT doi, title, authors, year, journal_name
+            FROM articles
+            WHERE LOWER(authors) LIKE LOWER(?)
+            ORDER BY year DESC, title
+            LIMIT ?
+        """, [f'%{author_name}%', limit]).fetchall()
+        
+        return [dict(zip(['doi', 'title', 'authors', 'year', 'journal'], row)) 
+                for row in result]
+    
+    def get_sample_articles(self, limit: int = 10) -> pd.DataFrame:
+        """Get a sample of articles from the database"""
+        return self.conn.execute("""
+            SELECT doi, title, authors, year, journal_name
+            FROM articles
+            ORDER BY year DESC
+            LIMIT ?
+        """, [limit]).fetchdf()

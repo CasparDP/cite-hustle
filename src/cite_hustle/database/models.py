@@ -14,12 +14,9 @@ class DatabaseManager:
         """Connect to DuckDB with optimized settings"""
         self.conn = duckdb.connect(self.db_path)
         
-        # Enable full-text search extension
-        try:
-            self.conn.execute("INSTALL fts;")
-            self.conn.execute("LOAD fts;")
-        except Exception as e:
-            print(f"Note: FTS extension setup: {e}")
+        # Install and load full-text search extension
+        self.conn.execute("INSTALL fts;")
+        self.conn.execute("LOAD fts;")
         
         return self.conn
     
@@ -109,7 +106,7 @@ class DatabaseManager:
                 print(f"Index creation note: {e}")
     
     def create_fts_indexes(self):
-        """Create full-text search indexes"""
+        """Create full-text search indexes using DuckDB FTS extension"""
         try:
             # Full-text search on titles
             self.conn.execute("""
@@ -120,6 +117,7 @@ class DatabaseManager:
                     overwrite=1
                 );
             """)
+            print("✓ Full-text search index created for article titles")
             
             # Full-text search on abstracts
             self.conn.execute("""
@@ -130,9 +128,10 @@ class DatabaseManager:
                     overwrite=1
                 );
             """)
-            print("✓ Full-text search indexes created")
+            print("✓ Full-text search index created for abstracts")
         except Exception as e:
-            print(f"FTS index creation note: {e}")
+            print(f"⚠️  FTS index creation error: {e}")
+            print("   Search will still work but may be slower")
     
     def close(self):
         """Close database connection"""

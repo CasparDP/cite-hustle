@@ -69,19 +69,25 @@ def journals(field):
 @click.option('--year-end', default=2025, type=int, help='End year')
 @click.option('--parallel/--sequential', default=False, 
               help='Use parallel processing (may hit rate limits)')
+@click.option('--skip-fts-rebuild', is_flag=True,
+              help='Skip rebuilding FTS indexes after collection')
 @click.pass_context
-def collect(ctx, field, year_start, year_end, parallel):
+def collect(ctx, field, year_start, year_end, parallel, skip_fts_rebuild):
     """
     Collect article metadata from CrossRef
     
     This command fetches article metadata (title, authors, DOI, etc.)
     from the CrossRef API for the specified journals and year range.
     
+    After collection completes, FTS indexes are automatically rebuilt
+    to make the new articles searchable (use --skip-fts-rebuild to disable).
+    
     Examples:
         cite-hustle collect --field accounting --year-start 2020 --year-end 2024
         cite-hustle collect --field all --year-start 2023
     """
     repo = ctx.obj['repo']
+    db = ctx.obj['db']
     
     # Get journals for the field
     journals_list = JournalRegistry.get_by_field(field)
@@ -120,6 +126,23 @@ def collect(ctx, field, year_start, year_end, parallel):
         for journal_name, count in sorted(results.items(), key=lambda x: x[1], reverse=True):
             if count > 0:
                 click.echo(f"  • {journal_name}: {count:,} articles")
+    
+    # Rebuild FTS indexes if new articles were collected
+    if total_collected > 0 and not skip_fts_rebuild:
+        click.echo(f"\n{'='*60}")
+        click.echo("🔍 REBUILDING SEARCH INDEXES")
+        click.echo(f"{'='*60}")
+        click.echo("Updating full-text search indexes for new articles...")
+        
+        try:
+            db.create_fts_indexes()
+            click.echo("✓ Search indexes updated successfully!")
+            click.echo("\nNew articles are now searchable via:")
+            click.echo("  poetry run cite-hustle search 'your query'")
+        except Exception as e:
+            click.echo(f"⚠️  Warning: Failed to rebuild FTS indexes: {e}")
+            click.echo("   You can rebuild manually with:")
+            click.echo("   poetry run cite-hustle rebuild-fts")
     
     click.echo(f"\n{'='*60}\n")
 
@@ -245,30 +268,120 @@ def status(ctx):
 
 
 @main.command()
-@click.argument('query')
-@click.option('--limit', default=20, type=int, help='Number of results')
+@click.option('--limit', default=10, type=int, help='Number of articles to show')
 @click.pass_context
-def search(ctx, query, limit):
-    """Search articles by title (requires FTS setup)"""
+def sample(ctx, limit):
+    """Show a sample of articles in the database"""
     repo = ctx.obj['repo']
     
-    click.echo(f"\n🔍 Searching for: '{query}'")
+    articles = repo.get_sample_articles(limit)
     
-    results = repo.search_by_title(query, limit)
-    
-    if not results:
-        click.echo("No results found")
+    if articles.empty:
+        click.echo("\n⚠️  No articles in database. Run 'cite-hustle collect' first.")
         return
     
-    click.echo(f"\nFound {len(results)} results:\n")
+    click.echo(f"\n📚 Sample of {len(articles)} most recent articles:\n")
     
-    for i, result in enumerate(results[:limit], 1):
-        click.echo(f"{i}. {result['title']}")
-        click.echo(f"   {result['authors']} ({result['year']})")
-        click.echo(f"   {result['journal']}")
-        if result['score']:
-            click.echo(f"   Score: {result['score']:.2f}")
+    for idx, row in articles.iterrows():
+        click.echo(f"{idx + 1}. {row['title']}")
+        click.echo(f"   Authors: {row['authors']}")
+        click.echo(f"   Journal: {row['journal_name']} ({row['year']})")
+        click.echo(f"   DOI: {row['doi']}")
         click.echo()
+
+
+@main.command()
+@click.argument('query')
+@click.option('--limit', default=20, type=int, help='Number of results')
+@click.option('--author', is_flag=True, help='Search by author instead of title')
+@click.pass_context
+def search(ctx, query, limit, author):
+    """
+    Search articles by title or author using full-text search
+    
+    Examples:
+        cite-hustle search "earnings management"
+        cite-hustle search "Smith" --author
+        cite-hustle search "accounting" --limit 50
+    """
+    repo = ctx.obj['repo']
+    
+    if author:
+        click.echo(f"\n🔍 Searching authors for: '{query}'")
+        results = repo.search_by_author(query, limit)
+    else:
+        click.echo(f"\n🔍 Searching titles for: '{query}'")
+        results = repo.search_by_title(query, limit)
+    
+    if not results:
+        click.echo(f"\n❌ No results found for '{query}'")
+        click.echo("\nTips:")
+        click.echo("  • Try different keywords or shorter terms")
+        click.echo("  • Search uses full-text indexing with relevance ranking")
+        click.echo("  • Use --author flag to search by author name")
+        click.echo("  • Use 'cite-hustle sample' to see what's in the database")
+        click.echo("\nIf you just added articles, the search index may need rebuilding:")
+        click.echo("  poetry run cite-hustle rebuild-fts")
+        return
+    
+    click.echo(f"\n✓ Found {len(results)} result{'s' if len(results) != 1 else ''}:\n")
+    
+    for i, result in enumerate(results, 1):
+        click.echo(f"{i}. {result['title']}")
+        click.echo(f"   Authors: {result['authors']}")
+        click.echo(f"   Journal: {result['journal']} ({result['year']})")
+        click.echo(f"   DOI: {result['doi']}")
+        if 'score' in result and result['score']:
+            click.echo(f"   Relevance: {result['score']:.2f}")
+        click.echo()
+
+
+@main.command(name='rebuild-fts')
+@click.pass_context
+def rebuild_fts(ctx):
+    """
+    Rebuild full-text search indexes
+    
+    Use this command if search is not returning expected results.
+    This rebuilds the FTS indexes to include all articles in the database.
+    """
+    db = ctx.obj['db']
+    repo = ctx.obj['repo']
+    
+    click.echo("\n" + "="*60)
+    click.echo("🔍 REBUILDING FULL-TEXT SEARCH INDEXES")
+    click.echo("="*60)
+    
+    # Check article count
+    count = repo.get_article_count()
+    click.echo(f"\nArticles in database: {count:,}")
+    
+    if count == 0:
+        click.echo("\n⚠️  No articles to index!")
+        click.echo("Run: poetry run cite-hustle collect --field accounting --year-start 2023")
+        return
+    
+    click.echo("\nRebuilding indexes...")
+    try:
+        db.create_fts_indexes()
+        click.echo("✓ FTS indexes rebuilt successfully!")
+        
+        # Test search
+        click.echo("\nTesting search...")
+        results = repo.search_by_title("accounting", limit=3)
+        if results:
+            click.echo(f"✓ Search working! Found {len(results)} results for 'accounting'")
+        else:
+            click.echo("⚠️  Search returned no results (may be normal)")
+        
+    except Exception as e:
+        click.echo(f"❌ Error rebuilding indexes: {e}")
+        return
+    
+    click.echo("\n" + "="*60)
+    click.echo("✓ REBUILD COMPLETE")
+    click.echo("="*60)
+    click.echo("\nYou can now search with: poetry run cite-hustle search 'your query'\n")
 
 
 if __name__ == '__main__':

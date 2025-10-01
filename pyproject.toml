@@ -9,7 +9,6 @@ packages = [{include = "cite_hustle", from = "src"}]
 [tool.poetry.dependencies]
 python = "^3.12"
 selenium = "^4.35.0"
-crossref-commons = "^0.0.7"
 tenacity = "^9.1.2"
 rapidfuzz = "^3.14.1"
 tqdm = "^4.67.1"
@@ -21,6 +20,7 @@ beautifulsoup4 = "^4.12.0"
 lxml = "^5.0.0"
 pandas = "^2.2.0"
 requests = "^2.32.0"
+crossref-commons = "^0.0.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
