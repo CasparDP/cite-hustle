@@ -1,0 +1,51 @@
+[tool.poetry]
+name = "cite-hustle"
+version = "0.1.0"
+description = "Academic literature research tool for automated paper collection"
+authors = ["CasparDP <58906924+CasparDP@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{include = "cite_hustle", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+selenium = "^4.35.0"
+crossref-commons = "^0.0.7"
+tenacity = "^9.1.2"
+rapidfuzz = "^3.14.1"
+tqdm = "^4.67.1"
+duckdb = "^1.1.0"
+pydantic = "^2.0.0"
+pydantic-settings = "^2.0.0"
+click = "^8.0.0"
+beautifulsoup4 = "^4.12.0"
+lxml = "^5.0.0"
+pandas = "^2.2.0"
+requests = "^2.32.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-cov = "^5.0.0"
+black = "^24.0.0"
+ruff = "^0.5.0"
+mypy = "^1.10.0"
+
+[tool.poetry.scripts]
+cite-hustle = "cite_hustle.cli.commands:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

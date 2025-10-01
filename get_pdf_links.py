@@ -113,14 +113,20 @@ def extract_best_result(driver, db_title, similarity_threshold=85, max_results=8
         return None, "Error during extraction"
     
 # Check which DOIs are already processed
-def fetch_processed_dois(db_name="../DB/articles.duckdb"):
+def fetch_processed_dois(db_name=None):
+    if db_name is None:
+        import os
+        db_name = os.path.expandvars("$HOME/Dropbox/Github Data/cite-hustle/DB/articles.duckdb")
     conn = duckdb.connect(db_name)
     processed_dois = conn.execute("SELECT DISTINCT DOI FROM ssrn_links WHERE Abstract IS NOT NULL").fetchall()
     conn.close()
     return {doi[0] for doi in processed_dois}  # Return a set of DOIs for faster lookup
 
 # Fetch titles and DOIs from the DuckDB database
-def fetch_titles_and_dois(db_name="../DB/articles.duckdb"):
+def fetch_titles_and_dois(db_name=None):
+    if db_name is None:
+        import os
+        db_name = os.path.expandvars("$HOME/Dropbox/Github Data/cite-hustle/DB/articles.duckdb")
     conn = duckdb.connect(db_name)
     # Fetch all titles and DOIs from the DuckDB database filter out duplicates and where ssrn_link is null
     articles = conn.execute("SELECT DISTINCT DOI, Title FROM articles_meta").fetchall()
@@ -129,7 +135,10 @@ def fetch_titles_and_dois(db_name="../DB/articles.duckdb"):
 
 
 # Process titles and save results to DuckDB
-def process_titles(db_name="../DB/articles.duckdb", crawl_delay=5):
+def process_titles(db_name=None, crawl_delay=5):
+    if db_name is None:
+        import os
+        db_name = os.path.expandvars("$HOME/Dropbox/Github Data/cite-hustle/DB/articles.duckdb")
     # Fetch all titles and DOIs
     articles = fetch_titles_and_dois(db_name)
 

@@ -31,13 +31,13 @@ star_journals_dict = {
 }
 
 
-CACHE_DIR = Path("../cache")
-METADATA_DIR = Path("../metadata")
+CACHE_DIR = Path(os.path.expandvars("$HOME/Dropbox/Github Data/cite-hustle/cache"))
+METADATA_DIR = Path(os.path.expandvars("$HOME/Dropbox/Github Data/cite-hustle/metadata"))
 MAX_WORKERS = 3  # Adjust based on API rate limits
 
 # Create necessary directories
-CACHE_DIR.mkdir(exist_ok=True)
-METADATA_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(exist_ok=True, parents=True)
+METADATA_DIR.mkdir(exist_ok=True, parents=True)
 
 my_etiquette = Etiquette('Student RA', 'alpha1', 'My Project URL', 'spiny.bubble0v@icloud.com')
 works = Works(etiquette=my_etiquette)
@@ -144,6 +144,6 @@ def process_multiple_years_issns(years, issns):
                 
 #TODO: Add a main function to run the script
 if __name__ == "__main__":
-    years = list(range(2004, 2026))
+    years = list(range(2000, 2026))
     issns = list(star_journals_dict.values())
     process_multiple_years_issns(years, issns)
