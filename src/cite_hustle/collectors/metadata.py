@@ -18,6 +18,37 @@ from cite_hustle.database.repository import ArticleRepository
 class MetadataCollector:
     """Collects article metadata from CrossRef API"""
     
+    # Keywords to identify non-article content
+    # NOTE: These should be specific to avoid false positives
+    NON_ARTICLE_KEYWORDS = [
+        'front matter', 'back matter', 
+        'cover', 'covers',
+        'book review', 'books received',
+        'editorial board', 'editorial note',
+        'erratum', 'corrigendum', 'correction',
+        'retraction',
+        'index to volume', 'subject index', 'author index',
+        'table of contents',
+        'masthead', 'issue information',
+        'title pages', 'copyright page'
+    ]
+    
+    # Patterns that indicate start/end of title (more precise)
+    NON_ARTICLE_PATTERNS = [
+        r'^announcements?$',  # "Announcements" by itself
+        r'^announcements? and ',  # "Announcements and News"
+        r'^editorial$',  # "Editorial" by itself
+        r'^contents',  # Starts with "Contents"
+        r'^volume \d+',  # "Volume 45 Issue 3"
+        r'^issue \d+',  # "Issue 3"
+    ]
+    
+    # Valid CrossRef types for research articles
+    VALID_TYPES = [
+        'journal-article',
+        'proceedings-article'
+    ]
+    
     def __init__(self, repo: ArticleRepository, cache_dir: Optional[Path] = None):
         """
         Initialize metadata collector
@@ -55,6 +86,43 @@ class MetadataCollector:
         text = re.sub(r'\s+', ' ', text).strip()
         
         return text
+    
+    @classmethod
+    def is_valid_article(cls, article: Dict) -> bool:
+        """
+        Check if an item from CrossRef is a valid research article
+        
+        Uses both keyword matching and regex patterns to avoid false positives.
+        
+        Args:
+            article: CrossRef article dictionary
+            
+        Returns:
+            True if valid research article, False otherwise
+        """
+        # Check CrossRef type
+        article_type = article.get('type', '')
+        if article_type not in cls.VALID_TYPES:
+            return False
+        
+        # Check title for non-article keywords
+        title = ' '.join(article.get('title', [''])).lower()
+        
+        # Check exact keyword matches (full phrases)
+        for keyword in cls.NON_ARTICLE_KEYWORDS:
+            if keyword in title:
+                return False
+        
+        # Check regex patterns for more precise matching
+        for pattern in cls.NON_ARTICLE_PATTERNS:
+            if re.search(pattern, title, re.IGNORECASE):
+                return False
+        
+        # Must have a DOI
+        if not article.get('DOI'):
+            return False
+        
+        return True
     
     @retry(
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -119,6 +187,8 @@ class MetadataCollector:
         """
         Transform CrossRef article data into database format
         
+        Filters out non-article content (book reviews, front matter, etc.)
+        
         Args:
             articles: Raw articles from CrossRef
             journal: Journal metadata
@@ -127,8 +197,14 @@ class MetadataCollector:
             List of article dictionaries ready for database insertion
         """
         transformed = []
+        filtered_count = 0
         
         for article in articles:
+            # Filter out non-articles
+            if not self.is_valid_article(article):
+                filtered_count += 1
+                continue
+            
             doi = article.get('DOI', '')
             if not doi:
                 continue
@@ -169,6 +245,9 @@ class MetadataCollector:
                 'publisher': publisher
             })
         
+        if filtered_count > 0:
+            print(f"  ℹ️  Filtered out {filtered_count} non-article items")
+        
         return transformed
     
     def collect_for_journal(self, journal: Journal, years: List[int], 
@@ -206,7 +285,7 @@ class MetadataCollector:
             if not articles:
                 continue
             
-            # Transform and save
+            # Transform and save (with filtering)
             transformed = self.transform_articles(articles, journal)
             
             if transformed:

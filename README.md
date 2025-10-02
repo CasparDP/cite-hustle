@@ -5,9 +5,9 @@ Academic literature research tool for automated collection of papers from top jo
 ## Overview
 
 Cite-Hustle automates the workflow of collecting academic papers:
-1. **Collect** article metadata from CrossRef API
-2. **Scrape** SSRN pages to find abstracts and PDF links
-3. **Download** PDFs for offline reading
+1. **Collect** article metadata from CrossRef API ✅
+2. **Scrape** SSRN pages to find abstracts and PDF links ✅  
+3. **Download** PDFs for offline reading ✅
 
 ## Setup
 
@@ -20,7 +20,7 @@ Cite-Hustle automates the workflow of collecting academic papers:
 
 ```bash
 # Navigate to repository
-cd /Users/casparm2/Local/GitHub/cite-hustle
+cd ~/Github/cite-hustle
 
 # Install dependencies with Poetry
 poetry install
@@ -36,20 +36,36 @@ poetry shell
 cp .env.example .env
 
 # Edit .env with your settings
-# Especially set CITE_HUSTLE_CROSSREF_EMAIL
+# Especially set CITE_HUSTLE_CROSSREF_EMAIL=your.email@example.com
 ```
 
 ### Initialize Database
 
 ```bash
-# Initialize the DuckDB database schema
+# Initialize the DuckDB database schema and FTS indexes
 poetry run cite-hustle init
-
-# Or if you activated the shell:
-cite-hustle init
 ```
 
 ## Usage
+
+### Complete Workflow
+
+```bash
+# 1. Collect article metadata from CrossRef
+poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2024
+
+# 2. Scrape SSRN for abstracts
+poetry run cite-hustle scrape --limit 50
+
+# 3. Check progress
+poetry run cite-hustle status
+
+# 4. Search articles
+poetry run cite-hustle search "earnings management"
+
+# 5. Download PDFs (when PDF URLs are available)
+poetry run cite-hustle download --limit 20
+```
 
 ### Check Status
 
@@ -71,33 +87,50 @@ poetry run cite-hustle journals --field accounting
 ### Collect Metadata
 
 ```bash
-# Collect article metadata from CrossRef
+# Collect accounting papers from 2020-2024
 poetry run cite-hustle collect --field accounting --year-start 2020 --year-end 2024
 
-# Note: This command needs migration of get_meta_articles.py logic
+# Collect all fields for 2023
+poetry run cite-hustle collect --field all --year-start 2023 --year-end 2023
 ```
 
 ### Scrape SSRN
 
 ```bash
-# Scrape SSRN for articles not yet processed
-poetry run cite-hustle scrape --limit 100 --delay 5
+# Scrape 50 articles with default settings
+poetry run cite-hustle scrape --limit 50
 
-# Note: This command needs migration of get_pdf_links.py logic
-```
+# Scrape with custom settings
+poetry run cite-hustle scrape --delay 3 --threshold 90
 
-### Download PDFs
-
-```bash
-# Download PDFs from SSRN
-poetry run cite-hustle download --limit 50 --delay 2
+# Show browser for debugging
+poetry run cite-hustle scrape --no-headless --limit 5
 ```
 
 ### Search
 
 ```bash
-# Search articles by title (requires FTS setup)
-poetry run cite-hustle search "earnings management" --limit 20
+# Search by title (uses full-text search with BM25 ranking)
+poetry run cite-hustle search "earnings management"
+
+# Search by author
+poetry run cite-hustle search "Smith" --author
+
+# Get more results
+poetry run cite-hustle search "financial reporting" --limit 50
+```
+
+### Other Commands
+
+```bash
+# Show sample articles
+poetry run cite-hustle sample --limit 10
+
+# Rebuild FTS indexes (if search not working)
+poetry run cite-hustle rebuild-fts
+
+# Get help
+poetry run cite-hustle --help
 ```
 
 ## Project Structure
@@ -113,16 +146,18 @@ cite-hustle/
 │   │   ├── models.py          # Database schema & connection
 │   │   └── repository.py      # Data access layer
 │   └── collectors/
-│       ├── journals.py        # Journal registry
-│       ├── metadata.py        # CrossRef collector (TODO)
-│       ├── ssrn_scraper.py    # SSRN scraper (TODO)
-│       └── pdf_downloader.py  # PDF downloader
-├── get_meta_articles.py       # Legacy script to migrate
-├── get_pdf_links.py           # Legacy script to migrate
+│       ├── journals.py        # Journal registry (19 journals)
+│       ├── metadata.py        # CrossRef collector ✅
+│       ├── ssrn_scraper.py    # SSRN scraper ✅
+│       └── pdf_downloader.py  # PDF downloader ✅
+├── get_meta_articles.py       # Legacy script (reference)
+├── get_pdf_links.py           # Legacy script (reference)
 ├── pyproject.toml
 ├── poetry.lock
 ├── .env.example
-└── README.md
+├── README.md
+├── METADATA_MIGRATION.md      # Migration guide
+└── SSRN_MIGRATION.md          # Migration guide
 ```
 
 ## Data Storage
@@ -134,70 +169,85 @@ All data is stored in Dropbox for easy syncing across machines:
 ├── DB/
 │   └── articles.duckdb        # Main database (syncs via Dropbox)
 ├── cache/                      # API response cache
-├── metadata/                   # CSV exports (optional)
-├── pdfs/                       # Downloaded PDFs
-└── ssrn_html/                 # Saved HTML pages
+├── ssrn_html/                 # Saved SSRN HTML pages
+└── pdfs/                       # Downloaded PDFs
 ```
 
-## Migration TODO
+## Features
 
-The following legacy scripts need to be migrated:
+### ✅ Metadata Collection
+- Fetches from CrossRef API for 19 top journals
+- Automatic caching to reduce API calls
+- Retry logic with exponential backoff
+- Progress tracking with tqdm
+- Automatic FTS index rebuilding
 
-1. **get_meta_articles.py** → `src/cite_hustle/collectors/metadata.py`
-   - Migrate CrossRef API logic
-   - Integrate with new database structure
-   - Use JournalRegistry for journal definitions
+### ✅ SSRN Scraping  
+- Fuzzy title matching (rapidfuzz)
+- Configurable similarity threshold
+- Automatic cookie handling
+- HTML storage for later analysis
+- Comprehensive error logging
+- Resumable after interruption
 
-2. **get_pdf_links.py** → `src/cite_hustle/collectors/ssrn_scraper.py`
-   - Migrate Selenium scraping logic
-   - Integrate with new database structure
-   - Improve HTML storage and abstract extraction
+### ✅ Full-Text Search
+- DuckDB FTS extension with BM25 ranking
+- Search titles and abstracts
+- Relevance scoring
+- Fast query performance
+
+### ✅ PDF Download
+- Rate limiting and retry logic
+- Progress bars
+- Automatic file organization
 
 ## Database Schema
 
 ### Tables
 
 - **journals**: Journal metadata (ISSN, name, field, publisher)
-- **articles**: Article metadata from CrossRef
-- **ssrn_pages**: SSRN page data (HTML, abstracts, PDF links)
+- **articles**: Article metadata from CrossRef (DOI, title, authors, year)
+- **ssrn_pages**: SSRN data (URL, HTML, abstract, PDF links)
 - **processing_log**: Processing history and errors
 
 ### Full-Text Search
 
 DuckDB FTS extension provides fast full-text search on:
-- Article titles
-- Abstracts
+- Article titles (fts_main_articles)
+- Abstracts (fts_main_ssrn_pages)
+
+## Supported Journals
+
+19 top journals across 3 fields:
+
+**Accounting (6)**: The Accounting Review, Journal of Accounting and Economics, Journal of Accounting Research, Contemporary Accounting Research, Accounting Organizations and Society, Review of Accounting Studies
+
+**Finance (5)**: Journal of Finance, Journal of Financial Economics, Review of Financial Studies, Journal of Financial and Quantitative Analysis, Financial Management
+
+**Economics (8)**: American Economic Review, Econometrica, Quarterly Journal of Economics, Journal of Political Economy, Review of Economic Studies, Journal of Economic Literature, Journal of Economic Perspectives, Journal of Labor Economics
 
 ## Development
 
-### Run Commands
+### Poetry Commands
 
 ```bash
-# Check status
-poetry run cite-hustle status
+# Install project
+poetry install
 
-# Initialize fresh database
-poetry run cite-hustle init
-
-# View all commands
-poetry run cite-hustle --help
-
-# Or activate shell to avoid 'poetry run' prefix
-poetry shell
-cite-hustle status
-```
-
-### Add Dependencies
-
-```bash
-# Add a new package
+# Add dependency
 poetry add package-name
 
-# Add a dev dependency
+# Add dev dependency
 poetry add --group dev package-name
 
 # Update dependencies
 poetry update
+
+# Activate shell
+poetry shell
+
+# Run command without activating shell
+poetry run cite-hustle status
 ```
 
 ### Database Access
@@ -214,50 +264,51 @@ repo = ArticleRepository(db)
 
 # Query articles
 articles = repo.get_articles_by_year_range(2020, 2024)
-print(articles.head())
+pending = repo.get_pending_ssrn_scrapes(limit=10)
+stats = repo.get_statistics()
 ```
 
-## Poetry Cheat Sheet
+## Migration Status
 
+✅ **Metadata Collection** - Complete  
+✅ **SSRN Scraping** - Complete  
+✅ **PDF Download** - Complete (needs PDF URL extraction)  
+⏳ **Web GUI** - Future enhancement  
+
+See `METADATA_MIGRATION.md` and `SSRN_MIGRATION.md` for detailed migration notes.
+
+## Troubleshooting
+
+### Search not working
 ```bash
-# Install project
-poetry install
+poetry run cite-hustle rebuild-fts
+```
 
-# Activate virtual environment
-poetry shell
+### ChromeDriver not found
+```bash
+brew install --cask chromedriver
+```
 
-# Run command without activating shell
-poetry run cite-hustle status
+### No articles in database
+```bash
+poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2023
+```
 
-# Add dependency
-poetry add requests
-
-# Add dev dependency
-poetry add --group dev pytest
-
-# Update all dependencies
-poetry update
-
-# Show installed packages
-poetry show
-
-# Export requirements.txt (if needed)
-poetry export -f requirements.txt --output requirements.txt
-
-# Remove dependency
-poetry remove package-name
+### Want to see browser (debugging)
+```bash
+poetry run cite-hustle scrape --no-headless --limit 5
 ```
 
 ## Future Enhancements
 
-- [ ] Migrate legacy scripts
-- [ ] Add abstract extraction from HTML
-- [ ] Implement PDF text extraction
-- [ ] Add web GUI (FastAPI + Streamlit/React)
+- [ ] Extract PDF URLs from SSRN HTML pages
+- [ ] Add web GUI (FastAPI + React/Streamlit)
 - [ ] Deploy to cloud (Railway/Fly.io)
-- [ ] Add citation graph analysis
-- [ ] Implement full-text search across PDF content
-- [ ] Add export to bibliography formats (BibTeX, RIS)
+- [ ] Citation graph analysis
+- [ ] Full-text search across PDF content
+- [ ] Export to bibliography formats (BibTeX, RIS)
+- [ ] Multi-user support with PostgreSQL
+- [ ] Automated literature reviews
 
 ## License
 

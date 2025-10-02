@@ -21,7 +21,7 @@ class ArticleRepository:
             ON CONFLICT (doi) DO UPDATE SET
                 title = EXCLUDED.title,
                 authors = EXCLUDED.authors,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = now()
         """, [doi, title, authors, year, journal_issn, journal_name, publisher])
     
     def bulk_insert_articles(self, articles: List[Dict]):
@@ -70,7 +70,7 @@ class ArticleRepository:
                 abstract = EXCLUDED.abstract,
                 match_score = EXCLUDED.match_score,
                 error_message = EXCLUDED.error_message,
-                scraped_at = CURRENT_TIMESTAMP
+                scraped_at = now()
         """, [doi, ssrn_url, html_content, html_file_path, abstract, match_score, error_message])
     
     def update_pdf_info(self, doi: str, pdf_url: str, pdf_file_path: Optional[str] = None, 

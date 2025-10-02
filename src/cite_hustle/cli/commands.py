@@ -6,6 +6,7 @@ from cite_hustle.database.models import DatabaseManager
 from cite_hustle.database.repository import ArticleRepository
 from cite_hustle.collectors.journals import JournalRegistry
 from cite_hustle.collectors.metadata import MetadataCollector
+from cite_hustle.collectors.ssrn_scraper import SSRNScraper
 from cite_hustle.collectors.pdf_downloader import PDFDownloader
 
 
@@ -150,13 +151,20 @@ def collect(ctx, field, year_start, year_end, parallel, skip_fts_rebuild):
 @main.command()
 @click.option('--limit', default=None, type=int, help='Limit number of articles to scrape')
 @click.option('--delay', default=5, type=int, help='Delay between requests (seconds)')
+@click.option('--threshold', default=85, type=int, help='Minimum similarity threshold (0-100)')
+@click.option('--headless/--no-headless', default=True, help='Run browser in headless mode')
 @click.pass_context
-def scrape(ctx, limit, delay):
+def scrape(ctx, limit, delay, threshold, headless):
     """
     Scrape SSRN for article pages and abstracts
     
     This command searches SSRN for articles in the database that haven't
     been scraped yet, extracts abstracts, and saves HTML content.
+    
+    Examples:
+        cite-hustle scrape --limit 10
+        cite-hustle scrape --delay 3 --threshold 90
+        cite-hustle scrape --no-headless  # Show browser (for debugging)
     """
     repo = ctx.obj['repo']
     
@@ -167,13 +175,50 @@ def scrape(ctx, limit, delay):
         click.echo("✓ No articles pending SSRN scrape")
         return
     
-    click.echo(f"\n🌐 Scraping SSRN for {len(pending)} articles")
-    click.echo(f"Crawl delay: {delay} seconds\n")
+    click.echo(f"\n{'='*60}")
+    click.echo(f"🌐 SCRAPING SSRN")
+    click.echo(f"{'='*60}")
+    click.echo(f"Articles to scrape: {len(pending)}")
+    click.echo(f"Crawl delay: {delay} seconds")
+    click.echo(f"Similarity threshold: {threshold}")
+    click.echo(f"Headless mode: {'Yes' if headless else 'No'}")
+    click.echo(f"HTML storage: {settings.html_storage_dir}")
+    click.echo(f"{'='*60}\n")
     
-    # TODO: Implement SSRN scraping
-    # This should call your migrated ssrn_scraper logic
-    click.echo("⚠️  This command needs implementation - migrate get_pdf_links.py logic here")
-    click.echo("See: src/cite_hustle/collectors/ssrn_scraper.py")
+    # Initialize scraper
+    scraper = SSRNScraper(
+        repo=repo,
+        crawl_delay=delay,
+        similarity_threshold=threshold,
+        headless=headless
+    )
+    
+    # Scrape articles
+    try:
+        stats = scraper.scrape_articles(pending, show_progress=True)
+        
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✓ SCRAPING COMPLETE")
+        click.echo(f"{'='*60}")
+        click.echo(f"Total processed: {stats['total']}")
+        click.echo(f"✓ Successful: {stats['success']}")
+        click.echo(f"⚠️  No match: {stats['no_match']}")
+        click.echo(f"✗ Failed: {stats['failed']}")
+        
+        if stats['success'] > 0:
+            click.echo(f"\nAbstracts saved to database and searchable via:")
+            click.echo(f"  poetry run cite-hustle search 'your query'")
+        
+        click.echo(f"\n{'='*60}\n")
+        
+    except KeyboardInterrupt:
+        click.echo("\n\n⚠️  Scraping interrupted by user")
+        click.echo("Progress has been saved. Run the command again to continue.")
+    except Exception as e:
+        click.echo(f"\n❌ Error during scraping: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @main.command()
