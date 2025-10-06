@@ -74,6 +74,8 @@ src/cite_hustle/
 
 ## Development Commands
 
+📋 **Quick Reference:** See [CLI-CHEATSHEET.md](./CLI-CHEATSHEET.md) for a complete command reference with examples.
+
 ### Environment Setup
 
 ```bash
@@ -84,7 +86,7 @@ poetry install
 poetry install --only main
 
 # Activate virtual environment
-poetry shell
+poetry env activate
 
 # Update dependencies
 poetry update
@@ -120,19 +122,19 @@ poetry run cite-hustle search "earnings management"
 poetry run cite-hustle --help
 ```
 
-### Activated Shell (Alternative)
+### Activated Environment (Alternative)
 
 ```bash
-# Activate Poetry shell (then no need for 'poetry run' prefix)
-poetry shell
+# Activate Poetry virtual environment (then no need for 'poetry run' prefix)
+poetry env activate
 
 # Now commands work directly
 cite-hustle init
 cite-hustle status
 cite-hustle journals --field all
 
-# Exit shell
-exit
+# Exit environment
+deactivate
 ```
 
 ### Database Access
@@ -323,12 +325,20 @@ DuckDB FTS extension provides BM25-based search:
    - Save to database via `ArticleRepository`
    - Integrate with CLI `collect` command
 
-2. **get_pdf_links.py** → `src/cite_hustle/collectors/ssrn_scraper.py`
-   - Extract Selenium setup and search logic
-   - Improve HTML storage (save to `html_storage_dir`)
-   - Extract abstract parsing
-   - Save to database via `ArticleRepository`
-   - Integrate with CLI `scrape` command
+2. **get_pdf_links.py** → `src/cite_hustle/collectors/ssrn_scraper.py` ✅ COMPLETE
+   - Selenium setup and search logic implemented
+   - HTML storage (saves to `html_storage_dir`)
+   - Abstract parsing implemented
+   - Saves to database via `ArticleRepository`
+   - Integrated with CLI `scrape` command
+   - **Recent improvements (v0.2.0):**
+     - Direct URL extraction from search results (2 requests vs 4+)
+     - Combined similarity scoring: fuzzy match (70%) + length similarity (30%)
+     - Better handling of title variations and similar papers
+     - Exponential backoff retry logic (max 3 retries by default)
+     - Detailed error messages with exception types
+     - Screenshot capture on errors for debugging
+     - Better rate limiting handling
 
 ### Migration Steps
 

@@ -15,6 +15,7 @@ Cite-Hustle automates the workflow of collecting academic papers:
 - Python 3.12+
 - Poetry for dependency management
 - Chrome browser (for Selenium scraping)
+- BeautifulSoup4 (for HTML parsing)
 
 ### Installation
 
@@ -24,6 +25,9 @@ cd ~/Github/cite-hustle
 
 # Install dependencies with Poetry
 poetry install
+
+# Install BeautifulSoup4 for abstract extraction
+poetry add beautifulsoup4
 
 # Activate the virtual environment (optional - Poetry handles this automatically)
 poetry shell
@@ -47,6 +51,8 @@ poetry run cite-hustle init
 ```
 
 ## Usage
+
+📋 **Quick Reference:** See [CLI-CHEATSHEET.md](./CLI-CHEATSHEET.md) for a complete command reference with examples.
 
 ### Complete Workflow
 
@@ -101,10 +107,28 @@ poetry run cite-hustle collect --field all --year-start 2023 --year-end 2023
 poetry run cite-hustle scrape --limit 50
 
 # Scrape with custom settings
-poetry run cite-hustle scrape --delay 3 --threshold 90
+poetry run cite-hustle scrape --delay 15 --threshold 90
 
 # Show browser for debugging
 poetry run cite-hustle scrape --no-headless --limit 5
+```
+
+### Extract Abstracts from Saved HTML
+
+If some abstracts failed during scraping, you can re-extract them from the saved HTML files:
+
+```bash
+# Re-extract abstracts for papers where it failed
+poetry run python extract_abstracts_from_html.py --missing-only
+
+# Re-extract ALL abstracts (overwrites existing)
+poetry run python extract_abstracts_from_html.py --all
+
+# Process only first 10 papers
+poetry run python extract_abstracts_from_html.py --missing-only --limit 10
+
+# Dry run (see what would happen)
+poetry run python extract_abstracts_from_html.py --missing-only --dry-run
 ```
 
 ### Search
@@ -183,11 +207,17 @@ All data is stored in Dropbox for easy syncing across machines:
 - Automatic FTS index rebuilding
 
 ### ✅ SSRN Scraping  
-- Fuzzy title matching (rapidfuzz)
-- Configurable similarity threshold
+- **Direct URL extraction** - Extracts URLs from search results (2 requests vs 4+)
+- **Combined similarity scoring** - Fuzzy match (70%) + length similarity (30%)
+- **Multi-strategy abstract extraction** - 4 different extraction methods for different HTML structures
+- **Search box verification** - Ensures text is entered before clicking search
+- **Standalone abstract extractor** - Re-extract abstracts from saved HTML files
+- Configurable similarity threshold and weight parameters
 - Automatic cookie handling
 - HTML storage for later analysis
-- Comprehensive error logging
+- Comprehensive error logging with full exception details
+- Exponential backoff retry logic for rate limiting
+- Screenshot capture on errors
 - Resumable after interruption
 
 ### ✅ Full-Text Search
@@ -243,10 +273,10 @@ poetry add --group dev package-name
 # Update dependencies
 poetry update
 
-# Activate shell
-poetry shell
+# Activate virtual environment
+poetry env activate
 
-# Run command without activating shell
+# Run command without activating environment
 poetry run cite-hustle status
 ```
 

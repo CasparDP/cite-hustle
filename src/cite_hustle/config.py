@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     max_workers: int = 3
     
     # Scraping Settings
-    crawl_delay: int = 5
-    similarity_threshold: int = 85
-    headless_browser: bool = True
+    crawl_delay: int = 10
+    similarity_threshold: int = 90
+    headless_browser: bool = False
     
     # DuckDB Settings
     duckdb_memory_limit: str = "4GB"
