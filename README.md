@@ -113,6 +113,35 @@ poetry run cite-hustle scrape --delay 15 --threshold 90
 poetry run cite-hustle scrape --no-headless --limit 5
 ```
 
+### Download PDFs
+
+**⚠️ Important:** As of October 2025, SSRN uses Cloudflare protection that blocks direct HTTP downloads. **Use the `--use-selenium` flag for reliable PDF downloads.**
+
+The Selenium downloader uses:
+- **selenium-stealth** to avoid bot detection
+- **Automatic Cloudflare challenge handling** to click "Verify you are human" checkboxes
+- Browser automation to download PDFs naturally
+
+```bash
+# Recommended: Use Selenium for reliable downloads
+poetry run cite-hustle download --use-selenium --limit 20
+
+# Show browser for debugging (non-headless)
+poetry run cite-hustle download --use-selenium --no-headless --limit 5
+
+# Adjust delay between downloads (be respectful!)
+poetry run cite-hustle download --use-selenium --delay 5 --limit 50
+
+# Download all pending PDFs
+poetry run cite-hustle download --use-selenium
+```
+
+**How it works:** 
+1. **Selenium method (recommended):** Uses Chrome browser automation to navigate to SSRN pages, find download buttons, and download PDFs - bypassing Cloudflare protection
+2. **HTTP method (legacy):** Constructs PDF URLs from SSRN paper URLs but usually blocked by Cloudflare
+
+📖 **For detailed documentation on the Selenium downloader, see [SELENIUM_PDF_DOWNLOADER.md](./SELENIUM_PDF_DOWNLOADER.md)**
+
 ### Extract Abstracts from Saved HTML
 
 If some abstracts failed during scraping, you can re-extract them from the saved HTML files:
@@ -227,9 +256,20 @@ All data is stored in Dropbox for easy syncing across machines:
 - Fast query performance
 
 ### ✅ PDF Download
-- Rate limiting and retry logic
-- Progress bars
-- Automatic file organization
+- **✨ Selenium browser automation with stealth mode** - Uses selenium-stealth to avoid detection
+- **✨ Automatic Cloudflare challenge handling** - Clicks "Verify you are human" checkboxes automatically
+- **Smart download strategies** - Multiple methods to find download buttons on SSRN pages
+- **Automatic cookie handling** - Accepts SSRN cookie banners automatically
+- **Download monitoring** - Waits for PDF files to complete downloading
+- **Headless mode support** - Can run browser invisibly in background
+- **Fallback HTTP method** - Constructs PDF URLs from SSRN paper URLs (legacy, usually blocked)
+- Rate limiting and configurable delays
+- Progress bars with tqdm
+- Content-type validation (ensures PDFs only)
+- Skip already downloaded files
+- Automatic file organization by DOI
+- Database status tracking (pdf_downloaded flag and pdf_url storage)
+- Comprehensive error handling and logging
 
 ## Database Schema
 
@@ -302,7 +342,7 @@ stats = repo.get_statistics()
 
 ✅ **Metadata Collection** - Complete  
 ✅ **SSRN Scraping** - Complete  
-✅ **PDF Download** - Complete (needs PDF URL extraction)  
+✅ **PDF Download** - Complete and functional  
 ⏳ **Web GUI** - Future enhancement  
 
 See `METADATA_MIGRATION.md` and `SSRN_MIGRATION.md` for detailed migration notes.
@@ -329,9 +369,23 @@ poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2
 poetry run cite-hustle scrape --no-headless --limit 5
 ```
 
+## Testing
+
+### Test PDF Downloader
+
+```bash
+# Run test script to check PDF downloader functionality
+poetry run python test_pdf_downloader.py
+```
+
+This will:
+- Check if database exists and show statistics
+- Display pending PDF downloads
+- Test PDF downloader initialization
+- Provide guidance on next steps
+
 ## Future Enhancements
 
-- [ ] Extract PDF URLs from SSRN HTML pages
 - [ ] Add web GUI (FastAPI + React/Streamlit)
 - [ ] Deploy to cloud (Railway/Fly.io)
 - [ ] Citation graph analysis

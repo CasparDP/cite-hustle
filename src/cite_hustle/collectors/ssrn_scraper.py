@@ -1,5 +1,6 @@
 """SSRN web scraper for finding papers and extracting abstracts"""
 import time
+import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from selenium import webdriver
@@ -52,6 +53,29 @@ class SSRNScraper:
         
         self.driver = None
         self.cookies_accepted = False
+    
+    def _convert_to_portable_path(self, absolute_path: str) -> str:
+        """
+        Convert absolute path to portable HOME-based path.
+        
+        Args:
+            absolute_path: Absolute file path like /Users/casparm2/Dropbox/...
+            
+        Returns:
+            Portable path like $HOME/Dropbox/...
+        """
+        path = Path(absolute_path)
+        
+        # Find if path starts with any /Users/username pattern
+        parts = path.parts
+        if len(parts) >= 3 and parts[0] == '/' and parts[1] == 'Users':
+            # Replace /Users/username with $HOME
+            relative_parts = parts[3:]  # Skip /, Users, username
+            portable_path = '$HOME/' + '/'.join(relative_parts)
+            return portable_path
+        
+        # If it doesn't match expected pattern, return as-is
+        return absolute_path
     
     def setup_webdriver(self):
         """Set up Selenium WebDriver with appropriate options"""
@@ -465,7 +489,8 @@ class SSRNScraper:
                 f.write(html_content)
             
             print(f"  ✓ Saved HTML to: {filepath}")
-            return str(filepath)
+            # Return portable path for database storage
+            return self._convert_to_portable_path(str(filepath))
         except Exception as e:
             print(f"⚠️  Failed to save HTML for {doi}: {e}")
             return None

@@ -24,9 +24,10 @@ src/cite_hustle/
 │   └── repository.py      # Data access layer with clean abstractions
 └── collectors/
     ├── journals.py        # Journal registry for all supported journals
-    ├── metadata.py        # CrossRef metadata collector (TODO: migrate)
-    ├── ssrn_scraper.py    # SSRN web scraper (TODO: migrate)
-    └── pdf_downloader.py  # PDF download functionality
+    ├── metadata.py        # CrossRef metadata collector (complete)
+    ├── ssrn_scraper.py    # SSRN web scraper (complete)
+    ├── pdf_downloader.py  # HTTP PDF downloader (legacy, blocked by Cloudflare)
+    └── selenium_pdf_downloader.py  # Selenium PDF downloader (bypasses Cloudflare)
 ```
 
 ### Core Components
@@ -51,8 +52,8 @@ src/cite_hustle/
    - `init`: Initialize database schema
    - `journals`: List journals by field
    - `collect`: Collect metadata (needs implementation)
-   - `scrape`: Scrape SSRN (needs implementation)
-   - `download`: Download PDFs (working)
+   - `scrape`: Scrape SSRN (working with Selenium)
+   - `download`: Download PDFs (working with Selenium)
    - `status`: Show database statistics
    - `search`: Full-text search (requires FTS setup)
 
@@ -60,7 +61,9 @@ src/cite_hustle/
 
 1. **Metadata Collection**: CrossRef API → Cache → DuckDB `articles` table
 2. **SSRN Scraping**: Articles → Selenium search → HTML storage → `ssrn_pages` table
-3. **PDF Download**: `ssrn_pages.pdf_url` → Download → Local storage → Update `pdf_downloaded`
+3. **PDF Download** (two methods):
+   - **Selenium (recommended)**: `ssrn_pages.ssrn_url` → Browser automation → Click download button → Wait for file → Local storage → Update `pdf_downloaded`
+   - **HTTP (legacy)**: `ssrn_pages.ssrn_url` → Extract abstract ID → Construct PDF URL → HTTP GET (usually blocked by Cloudflare) → Local storage
 
 ### Key Technologies
 
@@ -112,7 +115,10 @@ poetry run cite-hustle collect --field accounting --year-start 2020
 # Scrape SSRN (needs implementation)
 poetry run cite-hustle scrape --limit 100
 
-# Download PDFs
+# Download PDFs using Selenium browser automation (recommended)
+poetry run cite-hustle download --limit 50 --use-selenium --delay 2
+
+# Legacy HTTP download (usually fails due to Cloudflare)
 poetry run cite-hustle download --limit 50 --delay 2
 
 # Search articles
@@ -132,6 +138,9 @@ poetry env activate
 cite-hustle init
 cite-hustle status
 cite-hustle journals --field all
+
+# Download PDFs with Selenium
+cite-hustle download --limit 10 --use-selenium
 
 # Exit environment
 deactivate
@@ -394,9 +403,28 @@ poetry run cite-hustle status
 # Test journal registry
 poetry run cite-hustle journals --field all
 
-# Test PDF downloader (once SSRN scraping is implemented)
+# Test PDF downloader functionality
+poetry run python test_pdf_downloader.py
+
+# Test downloading PDFs (requires SSRN scraping first)
 poetry run cite-hustle download --limit 5
 ```
+
+### PDF Downloader Testing
+
+To verify the PDF downloader is functional:
+
+```bash
+# Run comprehensive test
+poetry run python test_pdf_downloader.py
+```
+
+This will:
+- Check database connection and display statistics
+- Show pending PDF downloads (if any)
+- Test PDF downloader initialization
+- Verify storage directories
+- Provide next steps based on current state
 
 ## Working Across Multiple Machines
 

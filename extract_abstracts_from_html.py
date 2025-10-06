@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import os
 from pathlib import Path
 from bs4 import BeautifulSoup
 from typing import Optional
@@ -18,6 +19,22 @@ from tqdm import tqdm
 from cite_hustle.config import settings
 from cite_hustle.database.models import DatabaseManager
 from cite_hustle.database.repository import ArticleRepository
+
+
+def expand_portable_path(path_str: str) -> Path:
+    """
+    Expand portable path (like $HOME/...) to absolute path.
+    
+    Args:
+        path_str: Path string that may contain $HOME or be absolute
+        
+    Returns:
+        Path object with expanded absolute path
+    """
+    if path_str and path_str.startswith('$HOME/'):
+        expanded = os.path.expandvars(path_str)
+        return Path(expanded)
+    return Path(path_str) if path_str else None
 
 
 def extract_abstract_from_html(html_content: str) -> Optional[str]:
@@ -216,8 +233,9 @@ def main():
         html_path = row.get('html_file_path')
         existing_abstract = row.get('abstract', '')
         
-        # Check if file exists
-        if not html_path or not Path(html_path).exists():
+        # Check if file exists (expand portable paths like $HOME)
+        html_file_path = expand_portable_path(html_path)
+        if not html_path or not html_file_path or not html_file_path.exists():
             stats['file_not_found'] += 1
             print(f"\n✗ {doi}: HTML file not found at {html_path}")
             continue
@@ -228,7 +246,7 @@ def main():
             continue
         
         # Extract abstract
-        abstract = process_html_file(Path(html_path))
+        abstract = process_html_file(html_file_path)
         
         if abstract:
             stats['success'] += 1

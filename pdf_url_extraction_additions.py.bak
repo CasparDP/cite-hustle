@@ -1,0 +1,199 @@
+"""
+Add PDF URL extraction to the SSRN scraper
+"""
+
+# PDF URL extraction methods to add to SSRNScraper class
+
+def _extract_pdf_url_from_page(self) -> Optional[str]:
+    """
+    Extract PDF download URL from SSRN paper page
+    
+    Tries multiple strategies to find the PDF download link
+    
+    Returns:
+        PDF URL or None if not found
+    """
+    strategies = [
+        # Strategy 1: Look for download button/link with specific classes
+        lambda: self._find_pdf_by_class(),
+        # Strategy 2: Look for links containing 'download' or '.pdf'
+        lambda: self._find_pdf_by_href_pattern(),
+        # Strategy 3: Look for specific button text
+        lambda: self._find_pdf_by_button_text(),
+    ]
+    
+    for idx, strategy in enumerate(strategies, 1):
+        try:
+            pdf_url = strategy()
+            if pdf_url:
+                print(f"  ✓ Found PDF URL (strategy {idx}): {pdf_url[:80]}...")
+                return pdf_url
+        except Exception as e:
+            # Strategy failed, try next one
+            continue
+    
+    print(f"  ⚠️  Could not find PDF URL on page")
+    return None
+
+def _find_pdf_by_class(self) -> Optional[str]:
+    """Find PDF by looking for download button with specific classes"""
+    try:
+        # Common SSRN download button selectors
+        selectors = [
+            "a.button-link[href*='pdf']",
+            "a.download-button",
+            "button.download",
+            "a[class*='download']",
+        ]
+        
+        for selector in selectors:
+            try:
+                element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                href = element.get_attribute('href')
+                if href and ('.pdf' in href.lower() or 'download' in href.lower()):
+                    return href
+            except NoSuchElementException:
+                continue
+                
+    except Exception:
+        pass
+    
+    return None
+
+def _find_pdf_by_href_pattern(self) -> Optional[str]:
+    """Find PDF by searching all links for download/pdf patterns"""
+    try:
+        # Get all links on the page
+        links = self.driver.find_elements(By.TAG_NAME, "a")
+        
+        for link in links:
+            href = link.get_attribute('href')
+            if not href:
+                continue
+                
+            # Check if link looks like a PDF download
+            if any(pattern in href.lower() for pattern in ['.pdf', 'download', 'getfile']):
+                # Verify it's a complete URL
+                if href.startswith('http'):
+                    return href
+                    
+    except Exception:
+        pass
+    
+    return None
+
+def _find_pdf_by_button_text(self) -> Optional[str]:
+    """Find PDF by looking for buttons/links with download text"""
+    try:
+        # Look for elements with download-related text
+        download_texts = ['download', 'download this paper', 'pdf', 'get pdf']
+        
+        for text in download_texts:
+            try:
+                # Try buttons first
+                elements = self.driver.find_elements(By.XPATH, 
+                    f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}')]")
+                
+                # Then try links
+                if not elements:
+                    elements = self.driver.find_elements(By.XPATH,
+                        f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}')]")
+                
+                for element in elements:
+                    href = element.get_attribute('href')
+                    onclick = element.get_attribute('onclick')
+                    
+                    # Check href
+                    if href and ('.pdf' in href.lower() or 'download' in href.lower()):
+                        return href
+                    
+                    # Check onclick for PDF URL
+                    if onclick and '.pdf' in onclick:
+                        # Try to extract URL from onclick
+                        import re
+                        match = re.search(r'http[s]?://[^\s\'"]+\.pdf', onclick)
+                        if match:
+                            return match.group(0)
+                            
+            except Exception:
+                continue
+                
+    except Exception:
+        pass
+    
+    return None
+
+
+# Updated scrape_article method that includes PDF URL extraction
+def scrape_article_with_pdf(self, doi: str, title: str, retry_count: int = 0) -> Dict:
+    """
+    Scrape SSRN for a single article including PDF URL extraction
+    
+    Args:
+        doi: Article DOI
+        title: Article title to search for
+        retry_count: Current retry attempt (for internal use)
+        
+    Returns:
+        Dictionary with scraping results including pdf_url
+    """
+    result = {
+        'doi': doi,
+        'ssrn_url': None,
+        'abstract': None,
+        'pdf_url': None,  # NEW
+        'html_file_path': None,
+        'match_score': None,
+        'error_message': None,
+        'success': False
+    }
+    
+    try:
+        # Search SSRN and extract URLs from results page
+        search_success, search_error, results = self.search_ssrn_and_extract_urls(title)
+        
+        if not search_success:
+            # Check if we should retry
+            if retry_count < self.max_retries and search_error:
+                wait_time = self.crawl_delay * (self.backoff_factor ** retry_count)
+                print(f"  ⏳ Retry {retry_count + 1}/{self.max_retries} after {wait_time}s...")
+                time.sleep(wait_time)
+                
+                # Retry the scrape
+                return self.scrape_article_with_pdf(doi, title, retry_count + 1)
+            
+            result['error_message'] = search_error or "Failed to search SSRN"
+            return result
+        
+        # Find best matching result using combined similarity
+        ssrn_url, abstract, match_score, html_content = self.extract_best_result(title, results)
+        
+        if ssrn_url:
+            # Extract PDF URL from the page (we're already on the paper page from extract_best_result)
+            pdf_url = self._extract_pdf_url_from_page()
+            
+            # Success - save HTML and results
+            html_path = None
+            if html_content:
+                html_path = self.save_html(doi, html_content)
+            
+            result.update({
+                'ssrn_url': ssrn_url,
+                'abstract': abstract,
+                'pdf_url': pdf_url,  # NEW
+                'html_file_path': html_path,
+                'match_score': match_score,
+                'success': True
+            })
+        else:
+            # No match or error
+            result['error_message'] = abstract  # abstract contains error message when ssrn_url is None
+            result['match_score'] = match_score
+        
+        return result
+        
+    except Exception as e:
+        error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
+        result['error_message'] = error_msg
+        print(f"✗ {error_msg}")
+        return result

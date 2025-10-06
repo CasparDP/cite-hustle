@@ -8,6 +8,7 @@ from cite_hustle.collectors.journals import JournalRegistry
 from cite_hustle.collectors.metadata import MetadataCollector
 from cite_hustle.collectors.ssrn_scraper import SSRNScraper
 from cite_hustle.collectors.pdf_downloader import PDFDownloader
+from cite_hustle.collectors.selenium_pdf_downloader import SeleniumPDFDownloader
 
 
 @click.group()
@@ -224,51 +225,108 @@ def scrape(ctx, limit, delay, threshold, headless):
 @main.command()
 @click.option('--limit', default=None, type=int, help='Limit number of PDFs to download')
 @click.option('--delay', default=2, type=int, help='Delay between downloads (seconds)')
+@click.option('--use-selenium', is_flag=True, help='Use Selenium browser automation (bypasses Cloudflare)')
+@click.option('--headless/--no-headless', default=True, help='Run browser in headless mode (Selenium only)')
 @click.pass_context
-def download(ctx, limit, delay):
+def download(ctx, limit, delay, use_selenium, headless):
     """
     Download PDFs from SSRN
     
-    This command downloads PDFs for articles where the PDF URL has been
-    found but the file hasn't been downloaded yet.
+    This command downloads PDFs for articles where SSRN URLs are available.
+    Due to Cloudflare protection, direct HTTP downloads usually fail.
+    Use --use-selenium for browser automation that can bypass protection.
+    
+    Examples:
+        cite-hustle download --limit 10 --use-selenium
+        cite-hustle download --use-selenium --no-headless  # Show browser
+        cite-hustle download --delay 5 --use-selenium
     """
     repo = ctx.obj['repo']
     
-    # Get pending downloads
-    pending = repo.get_pending_pdf_downloads(limit=limit)
+    # Get articles with SSRN URLs for download
+    if use_selenium:
+        # For Selenium, we need articles with SSRN URLs (not necessarily PDF URLs)
+        articles = repo.get_articles_with_ssrn_urls(limit=limit, downloaded=False)
+        if articles.empty:
+            click.echo("✓ No articles with SSRN URLs available for download")
+            return
+    else:
+        # For HTTP, we need articles with PDF URLs
+        pending = repo.get_pending_pdf_downloads(limit=limit)
+        if pending.empty:
+            click.echo("✓ No PDFs pending download")
+            return
+        articles = pending
     
-    if pending.empty:
-        click.echo("✓ No PDFs pending download")
-        return
-    
-    click.echo(f"\n📄 Downloading {len(pending)} PDFs")
+    download_method = "Selenium browser automation" if use_selenium else "HTTP requests"
+    click.echo(f"\n📄 Downloading {len(articles)} PDFs using {download_method}")
     click.echo(f"Storage: {settings.pdf_storage_dir}")
-    click.echo(f"Delay: {delay} seconds\n")
+    click.echo(f"Delay: {delay} seconds")
+    if use_selenium:
+        click.echo(f"Browser mode: {'Headless' if headless else 'Visible'}")
+    click.echo()
     
-    # Initialize downloader
-    downloader = PDFDownloader(settings.pdf_storage_dir, delay=delay)
+    if not use_selenium:
+        # Show warning about Cloudflare protection
+        click.echo("⚠️  Note: Direct HTTP downloads usually fail due to SSRN's Cloudflare protection.")
+        click.echo("   Consider using --use-selenium for better success rates.\n")
     
-    # Prepare download list
-    download_list = [
-        {'url': row['pdf_url'], 'doi': row['doi']}
-        for _, row in pending.iterrows()
-    ]
+    # Initialize appropriate downloader
+    if use_selenium:
+        from cite_hustle.collectors.selenium_pdf_downloader import SeleniumPDFDownloader
+        downloader = SeleniumPDFDownloader(
+            storage_dir=settings.pdf_storage_dir, 
+            delay=delay,
+            headless=headless
+        )
+        
+        # Prepare download list for Selenium (uses SSRN URLs)
+        download_list = [
+            {
+                'doi': row['doi'],
+                'ssrn_url': row['ssrn_url']
+            }
+            for _, row in articles.iterrows() if row.get('ssrn_url')
+        ]
+    else:
+        downloader = PDFDownloader(settings.pdf_storage_dir, delay=delay)
+        
+        # Prepare download list with PDF URLs (HTTP downloader will construct from SSRN URLs)
+        download_list = [
+            {
+                'url': row.get('pdf_url'),  # May be None
+                'doi': row['doi'],
+                'ssrn_url': row['ssrn_url']  # Use this to construct PDF URL
+            }
+            for _, row in articles.iterrows()
+        ]
+    
+    if not download_list:
+        click.echo("✗ No valid articles found for download")
+        return
     
     # Download PDFs
     results = downloader.download_batch(download_list)
     
-    # Update database
+    # Update database with results
     for result in results:
         if result['success']:
+            # For HTTP downloader, construct PDF URL from SSRN URL
+            if not use_selenium and hasattr(downloader, 'construct_pdf_url'):
+                pdf_url = downloader.construct_pdf_url(result.get('ssrn_url')) if result.get('ssrn_url') else None
+            else:
+                pdf_url = None  # Selenium doesn't provide direct PDF URLs
+            
             repo.update_pdf_info(
                 doi=result['doi'],
-                pdf_url=None,  # Keep existing URL
+                pdf_url=pdf_url,
                 pdf_file_path=result['filepath'],
                 downloaded=True
             )
             repo.log_processing(result['doi'], 'download_pdf', 'success')
         else:
-            repo.log_processing(result['doi'], 'download_pdf', 'failed')
+            error_message = "Download failed" + (" (Cloudflare blocked)" if not use_selenium else "")
+            repo.log_processing(result['doi'], 'download_pdf', 'failed', error_message)
     
     click.echo(f"\n✓ Download process complete")
 
