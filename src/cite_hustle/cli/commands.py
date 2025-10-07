@@ -7,7 +7,8 @@ from cite_hustle.database.repository import ArticleRepository
 from cite_hustle.collectors.journals import JournalRegistry
 from cite_hustle.collectors.metadata import MetadataCollector
 from cite_hustle.collectors.ssrn_scraper import SSRNScraper
-from cite_hustle.collectors.pdf_downloader import PDFDownloader
+#TOFIXME: Temporarily disable due to Cloudflare issues  
+#from cite_hustle.collectors.pdf_downloader import PDFDownloader
 from cite_hustle.collectors.selenium_pdf_downloader import SeleniumPDFDownloader
 
 
