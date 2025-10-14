@@ -1,6 +1,7 @@
 """SSRN web scraper for finding papers and extracting abstracts"""
 import time
 import os
+import random
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from selenium import webdriver
@@ -12,16 +13,30 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from rapidfuzz import fuzz
 from tqdm import tqdm
+from selenium_stealth import stealth
 
 from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
+
+
+# Pool of realistic user agents for rotation
+USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
 
 
 class SSRNScraper:
     """Scrapes SSRN to find papers and extracting abstracts using direct URLs"""
     
     def __init__(self, repo: ArticleRepository, 
-                 crawl_delay: int = 5,
+                 crawl_delay: int = 35,
                  similarity_threshold: int = 85,
                  length_similarity_weight: float = 0.3,
                  headless: bool = True,
@@ -51,8 +66,14 @@ class SSRNScraper:
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         
-        self.driver = None
+        self.driver: Optional[webdriver.Chrome] = None
         self.cookies_accepted = False
+    
+    def _get_driver(self) -> webdriver.Chrome:
+        """Return initialized WebDriver or raise if not set."""
+        if self.driver is None:
+            raise RuntimeError("WebDriver not initialized. Call setup_webdriver() first.")
+        return self.driver
     
     def _convert_to_portable_path(self, absolute_path: str) -> str:
         """
@@ -78,24 +99,65 @@ class SSRNScraper:
         return absolute_path
     
     def setup_webdriver(self):
-        """Set up Selenium WebDriver with appropriate options"""
+        """Set up Selenium WebDriver with comprehensive anti-detection options"""
         chrome_options = Options()
         
+        # Randomly select user agent for this session
+        user_agent = random.choice(USER_AGENTS)
+        
         if self.headless:
-            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--headless=new")  # use Chrome's new headless mode
         
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1920,1080")
         
-        # Add user agent to look more like a real browser
-        chrome_options.add_argument(
-            "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        # Randomize window size slightly to avoid fingerprinting
+        width = random.randint(1920, 2560)
+        height = random.randint(1080, 1440)
+        chrome_options.add_argument(f"--window-size={width},{height}")
         
+        # Add randomized user agent
+        chrome_options.add_argument(f"user-agent={user_agent}")
+        
+        # Critical: Disable automation flags that websites can detect
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        # Additional stealth options
+        chrome_options.add_argument("--disable-web-security")
+        chrome_options.add_argument("--allow-running-insecure-content")
+        
+        # Initialize driver
         self.driver = webdriver.Chrome(options=chrome_options)
+
+        # Apply stealth mode to mask automation signals
+        try:
+            stealth(
+                self.driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+            )
+            print(f"  ✓ Stealth mode enabled with User-Agent: {user_agent[:50]}...")
+        except Exception as e:
+            # Proceed without stealth if unavailable
+            print(f"  ℹ️  Could not apply selenium-stealth: {type(e).__name__}: {e}")
+        
+        # Execute CDP commands to further hide automation
+        try:
+            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": user_agent
+            })
+            # Remove webdriver property
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        except Exception as e:
+            print(f"  ℹ️  Could not execute CDP commands: {type(e).__name__}: {e}")
+        
         return self.driver
     
     def accept_cookies(self, timeout: int = 10):
@@ -104,7 +166,8 @@ class SSRNScraper:
             return
         
         try:
-            cookie_button = WebDriverWait(self.driver, timeout).until(
+            drv = self._get_driver()
+            cookie_button = WebDriverWait(drv, timeout).until(
                 EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
             )
             cookie_button.click()
@@ -165,14 +228,15 @@ class SSRNScraper:
         try:
             # Navigate to SSRN homepage
             print(f"  → Navigating to SSRN homepage...")
-            self.driver.get(ssrn_url)
+            drv = self._get_driver()
+            drv.get(ssrn_url)
             
             # Accept cookies on first search
             self.accept_cookies(timeout)
             
             # Wait for and fill search box
             print(f"  → Waiting for search box...")
-            search_box = WebDriverWait(self.driver, timeout).until(
+            search_box = WebDriverWait(drv, timeout).until(
                 EC.presence_of_element_located((By.ID, "txtKeywords"))
             )
             print(f"  → Filling search box...")
@@ -184,7 +248,8 @@ class SSRNScraper:
             # Verify text was entered
             entered_text = search_box.get_attribute('value')
             if not entered_text or len(entered_text) < 5:
-                print(f"  ⚠️  Warning: Search box may not have been filled properly (got: '{entered_text[:50]}...')")
+                preview = (entered_text or "")[:50]
+                print(f"  ⚠️  Warning: Search box may not have been filled properly (got: '{preview}...')")
                 # Try again
                 search_box.clear()
                 time.sleep(0.5)
@@ -193,14 +258,14 @@ class SSRNScraper:
             
             # Click search button
             print(f"  → Clicking search button...")
-            search_button = WebDriverWait(self.driver, timeout).until(
+            search_button = WebDriverWait(drv, timeout).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "#searchForm1 > div.big-search > div"))
             )
             search_button.click()
             
             # Wait for results to load - wait for actual paper titles to appear
             print(f"  → Waiting for search results...")
-            WebDriverWait(self.driver, timeout).until(
+            WebDriverWait(drv, timeout).until(
                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, "h3[data-component='Typography'] a"))
             )
             
@@ -212,7 +277,7 @@ class SSRNScraper:
             results = []
             
             # Re-fetch elements to avoid stale element reference issues
-            result_elements = self.driver.find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
+            result_elements = drv.find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
             print(f"  ✓ Found {len(result_elements)} result elements")
             
             for idx, element in enumerate(result_elements):
@@ -309,7 +374,8 @@ class SSRNScraper:
         # Now navigate directly to the paper page to get full abstract
         try:
             print(f"  → Navigating to paper page...")
-            self.driver.get(best_url)
+            drv = self._get_driver()
+            drv.get(best_url)
             
             # Wait for page to load
             time.sleep(2)
@@ -323,7 +389,7 @@ class SSRNScraper:
                 print(f"  ✓ Extracted abstract ({len(abstract)} chars)")
             
             # Capture the HTML content from the paper page
-            html_content = self.driver.page_source
+            html_content = drv.page_source
             
             return best_url, abstract, int(best_similarity), html_content
             
@@ -375,7 +441,8 @@ class SSRNScraper:
             Abstract text or None
         """
         try:
-            abstract_div = self.driver.find_element(By.CSS_SELECTOR, selector)
+            drv = self._get_driver()
+            abstract_div = drv.find_element(By.CSS_SELECTOR, selector)
             
             if direct_text:
                 # Get all text directly
@@ -404,7 +471,8 @@ class SSRNScraper:
         """
         try:
             # Find all h3 elements
-            headers = self.driver.find_elements(By.TAG_NAME, "h3")
+            drv = self._get_driver()
+            headers = drv.find_elements(By.TAG_NAME, "h3")
             
             for header in headers:
                 if header_text.lower() in header.text.lower():
@@ -429,11 +497,13 @@ class SSRNScraper:
         """
         try:
             # Find all divs
-            divs = self.driver.find_elements(By.TAG_NAME, "div")
+            drv = self._get_driver()
+            divs = drv.find_elements(By.TAG_NAME, "div")
             
             for div in divs:
                 # Check if this div contains "Abstract" header
-                if "abstract" in div.get_attribute("class").lower():
+                class_attr = div.get_attribute("class") or ""
+                if "abstract" in class_attr.lower():
                     text = div.text.strip()
                     # Remove "Abstract" header if present
                     text = text.replace('Abstract\n', '').replace('Abstract', '').strip()
@@ -455,7 +525,8 @@ class SSRNScraper:
             Path to saved screenshot or None if failed
         """
         try:
-            if not self.driver:
+            drv = self.driver
+            if not drv:
                 return None
                 
             # Create safe filename from title
@@ -463,7 +534,7 @@ class SSRNScraper:
             timestamp = time.strftime('%Y%m%d_%H%M%S')
             filepath = self.html_storage_dir / f"ERROR_{safe_filename}_{timestamp}.png"
             
-            self.driver.save_screenshot(str(filepath))
+            drv.save_screenshot(str(filepath))
             return str(filepath)
         except Exception as e:
             print(f"  ⚠️  Failed to save screenshot: {e}")
