@@ -19,16 +19,52 @@ from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
 
 
-# Pool of realistic user agents for rotation
-USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+# Chrome-centric fingerprint profiles; align UA, platform, and graphics metadata
+FINGERPRINT_PROFILES = [
+    {
+        "name": "mac_chrome_120",
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.216 Safari/537.36",
+        "platform": "MacIntel",
+        "languages": ["en-US", "en"],
+        "timezone": "America/New_York",
+        "vendor": "Google Inc.",
+        "webgl_vendor": "Intel Inc.",
+        "renderer": "Intel Iris OpenGL Engine",
+        "window_bounds": (1920, 2560, 1080, 1440),
+    },
+    {
+        "name": "mac_chrome_121",
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Safari/537.36",
+        "platform": "MacIntel",
+        "languages": ["en-US", "en"],
+        "timezone": "America/Chicago",
+        "vendor": "Google Inc.",
+        "webgl_vendor": "Intel Inc.",
+        "renderer": "Intel UHD Graphics 630",
+        "window_bounds": (1680, 2304, 1050, 1440),
+    },
+    {
+        "name": "windows_chrome_120",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.224 Safari/537.36",
+        "platform": "Win32",
+        "languages": ["en-US", "en"],
+        "timezone": "America/Los_Angeles",
+        "vendor": "Google Inc.",
+        "webgl_vendor": "Google Inc. (Intel)",
+        "renderer": "ANGLE (Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)",
+        "window_bounds": (1600, 1920, 900, 1200),
+    },
+    {
+        "name": "windows_chrome_121",
+        "user_agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.140 Safari/537.36",
+        "platform": "Win32",
+        "languages": ["en-US", "en"],
+        "timezone": "America/Denver",
+        "vendor": "Google Inc.",
+        "webgl_vendor": "Google Inc. (NVIDIA)",
+        "renderer": "ANGLE (NVIDIA GeForce RTX 3060 Laptop GPU Direct3D11 vs_5_0 ps_5_0)",
+        "window_bounds": (1700, 2048, 960, 1290),
+    },
 ]
 
 
@@ -68,6 +104,8 @@ class SSRNScraper:
         
         self.driver: Optional[webdriver.Chrome] = None
         self.cookies_accepted = False
+        self.fingerprint = None
+        self._last_navigation = 0.0
     
     def _get_driver(self) -> webdriver.Chrome:
         """Return initialized WebDriver or raise if not set."""
@@ -102,63 +140,144 @@ class SSRNScraper:
         """Set up Selenium WebDriver with comprehensive anti-detection options"""
         chrome_options = Options()
         
-        # Randomly select user agent for this session
-        user_agent = random.choice(USER_AGENTS)
+        # Select a coherent fingerprint for this session
+        self.fingerprint = random.choice(FINGERPRINT_PROFILES).copy()
+        fingerprint = self.fingerprint
+        user_agent = fingerprint["user_agent"]
+        self.cookies_accepted = False
+        self._last_navigation = 0.0
         
         if self.headless:
-            chrome_options.add_argument("--headless=new")  # use Chrome's new headless mode
+            chrome_options.add_argument("--headless=new")
         
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument(f"--lang={fingerprint['languages'][0]}")
         
-        # Randomize window size slightly to avoid fingerprinting
-        width = random.randint(1920, 2560)
-        height = random.randint(1080, 1440)
+        # Randomize window size within the profile's envelope
+        min_w, max_w, min_h, max_h = fingerprint["window_bounds"]
+        width = random.randint(min_w, max_w)
+        height = random.randint(min_h, max_h)
         chrome_options.add_argument(f"--window-size={width},{height}")
-        
-        # Add randomized user agent
-        chrome_options.add_argument(f"user-agent={user_agent}")
+        chrome_options.add_argument(f"--user-agent={user_agent}")
         
         # Critical: Disable automation flags that websites can detect
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--disable-infobars")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        # Additional stealth options
-        chrome_options.add_argument("--disable-web-security")
-        chrome_options.add_argument("--allow-running-insecure-content")
+        chrome_options.add_experimental_option(
+            "prefs",
+            {"intl.accept_languages": ",".join(fingerprint["languages"])}
+        )
         
         # Initialize driver
         self.driver = webdriver.Chrome(options=chrome_options)
 
-        # Apply stealth mode to mask automation signals
+        # Apply stealth mode to align navigator/WebGL data with the chosen profile
         try:
             stealth(
                 self.driver,
-                languages=["en-US", "en"],
-                vendor="Google Inc.",
-                platform="Win32",
-                webgl_vendor="Intel Inc.",
-                renderer="Intel Iris OpenGL Engine",
+                languages=fingerprint["languages"],
+                vendor=fingerprint["vendor"],
+                platform=fingerprint["platform"],
+                webgl_vendor=fingerprint["webgl_vendor"],
+                renderer=fingerprint["renderer"],
                 fix_hairline=True,
             )
-            print(f"  ✓ Stealth mode enabled with User-Agent: {user_agent[:50]}...")
+            print(f"  ✓ Stealth mode enabled with profile: {fingerprint['name']}")
         except Exception as e:
-            # Proceed without stealth if unavailable
             print(f"  ℹ️  Could not apply selenium-stealth: {type(e).__name__}: {e}")
         
-        # Execute CDP commands to further hide automation
-        try:
-            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": user_agent
-            })
-            # Remove webdriver property
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        except Exception as e:
-            print(f"  ℹ️  Could not execute CDP commands: {type(e).__name__}: {e}")
-        
+        self._apply_fingerprint_overrides()
         return self.driver
+
+    def _apply_fingerprint_overrides(self):
+        """Sync CDP overrides with the active fingerprint profile."""
+        if not self.driver or not self.fingerprint:
+            return
+        fingerprint = self.fingerprint
+        languages = fingerprint.get("languages", ["en-US", "en"])
+        primary_locale = languages[0]
+        try:
+            self.driver.execute_cdp_cmd(
+                "Network.setUserAgentOverride",
+                {
+                    "userAgent": fingerprint["user_agent"],
+                    "acceptLanguage": ",".join(languages),
+                    "platform": fingerprint["platform"],
+                },
+            )
+            self.driver.execute_cdp_cmd(
+                "Emulation.setTimezoneOverride",
+                {"timezoneId": fingerprint.get("timezone", "America/New_York")},
+            )
+            self.driver.execute_cdp_cmd(
+                "Emulation.setLocaleOverride",
+                {"locale": primary_locale},
+            )
+        except Exception as e:
+            print(f"  ℹ️  Could not apply CDP fingerprint overrides: {type(e).__name__}: {e}")
+        try:
+            self.driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            self.driver.execute_script(
+                "Object.defineProperty(navigator, 'languages', {get: () => arguments[0]});",
+                languages,
+            )
+            self.driver.execute_script(
+                "Object.defineProperty(navigator, 'platform', {get: () => arguments[0]});",
+                fingerprint.get("platform", "Win32"),
+            )
+            self.driver.execute_script(
+                "Object.defineProperty(navigator, 'language', {get: () => arguments[0]});",
+                primary_locale,
+            )
+        except Exception as e:
+            print(f"  ℹ️  Could not patch navigator properties: {type(e).__name__}: {e}")
+
+    def _human_pause(self, base_seconds: float, jitter: float = 0.5):
+        """Sleep for a realistic interval around the requested duration."""
+        base_seconds = max(0.0, base_seconds)
+        jitter = max(0.0, jitter)
+        lower = max(0.0, base_seconds * (1 - jitter))
+        upper = base_seconds * (1 + jitter)
+        if upper == 0:
+            return
+        time.sleep(random.uniform(lower, upper))
+
+    def _respect_crawl_delay(self):
+        """Enforce crawl delay between top-level navigations with jitter."""
+        if self.crawl_delay <= 0 or self._last_navigation == 0.0:
+            return
+        base = float(self.crawl_delay)
+        jitter = min(base * 0.25, 8.0)
+        target_delay = max(0.5, base + random.uniform(-jitter, jitter))
+        elapsed = time.time() - self._last_navigation
+        wait_for = target_delay - elapsed
+        if wait_for > 0:
+            time.sleep(wait_for)
+
+    def _load_url(self, url: str) -> webdriver.Chrome:
+        """Navigate to a URL while honoring crawl delay and human pacing."""
+        drv = self._get_driver()
+        self._respect_crawl_delay()
+        drv.get(url)
+        self._last_navigation = time.time()
+        self._human_pause(1.4, jitter=0.4)
+        return drv
+
+    def _type_like_human(self, element, text: str):
+        """Send keys with small pauses to imitate manual typing."""
+        if not text:
+            return
+        for char in text:
+            element.send_keys(char)
+            time.sleep(random.uniform(0.07, 0.22))
+            if random.random() < 0.08:
+                time.sleep(random.uniform(0.18, 0.35))
     
     def accept_cookies(self, timeout: int = 10):
         """Accept cookies if banner appears"""
@@ -170,7 +289,9 @@ class SSRNScraper:
             cookie_button = WebDriverWait(drv, timeout).until(
                 EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
             )
+            self._human_pause(0.8, jitter=0.5)
             cookie_button.click()
+            self._human_pause(0.4, jitter=0.4)
             self.cookies_accepted = True
             print("✓ Accepted cookies")
         except TimeoutException:
@@ -228,8 +349,7 @@ class SSRNScraper:
         try:
             # Navigate to SSRN homepage
             print(f"  → Navigating to SSRN homepage...")
-            drv = self._get_driver()
-            drv.get(ssrn_url)
+            drv = self._load_url(ssrn_url)
             
             # Accept cookies on first search
             self.accept_cookies(timeout)
@@ -240,10 +360,12 @@ class SSRNScraper:
                 EC.presence_of_element_located((By.ID, "txtKeywords"))
             )
             print(f"  → Filling search box...")
+            search_box.click()
+            self._human_pause(0.3, 0.5)
             search_box.clear()
-            time.sleep(0.5)  # Wait for clear to complete
-            search_box.send_keys(title)
-            time.sleep(1)  # Wait for text to be fully entered
+            self._human_pause(0.4, 0.5)
+            self._type_like_human(search_box, title)
+            self._human_pause(0.6, 0.6)
             
             # Verify text was entered
             entered_text = search_box.get_attribute('value')
@@ -252,16 +374,18 @@ class SSRNScraper:
                 print(f"  ⚠️  Warning: Search box may not have been filled properly (got: '{preview}...')")
                 # Try again
                 search_box.clear()
-                time.sleep(0.5)
-                search_box.send_keys(title)
-                time.sleep(1)
+                self._human_pause(0.5, 0.5)
+                self._type_like_human(search_box, title)
+                self._human_pause(0.7, 0.5)
             
             # Click search button
             print(f"  → Clicking search button...")
             search_button = WebDriverWait(drv, timeout).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "#searchForm1 > div.big-search > div"))
             )
+            self._human_pause(0.5, 0.5)
             search_button.click()
+            self._human_pause(1.2, 0.6)
             
             # Wait for results to load - wait for actual paper titles to appear
             print(f"  → Waiting for search results...")
@@ -270,7 +394,7 @@ class SSRNScraper:
             )
             
             # Also wait a moment for all elements to fully render
-            time.sleep(1)
+            self._human_pause(1.0, 0.5)
             
             # Extract paper information directly from search results
             print(f"  → Extracting paper URLs from search results...")
@@ -374,11 +498,8 @@ class SSRNScraper:
         # Now navigate directly to the paper page to get full abstract
         try:
             print(f"  → Navigating to paper page...")
-            drv = self._get_driver()
-            drv.get(best_url)
-            
-            # Wait for page to load
-            time.sleep(2)
+            drv = self._load_url(best_url)
+            self._human_pause(1.6, 0.5)
             
             # Try multiple methods to extract abstract
             abstract = self._extract_abstract_from_page()
