@@ -248,6 +248,22 @@ class SSRNScraper:
             return
         time.sleep(random.uniform(lower, upper))
 
+    def _get_next_delay(self) -> float:
+        """
+        Generate variable crawl delay that mimics human behavior.
+        Not fixed delay, but random with occasional extra-long pauses.
+        Reduces bot signature detection.
+        """
+        base = random.uniform(self.crawl_delay * 0.5, self.crawl_delay * 1.5)
+        
+        # 12% chance of extra-long pause (user got distracted, checking email, etc.)
+        if random.random() < 0.12:
+            extra = random.uniform(30, 120)
+            print(f"    [Human pause] Adding {extra:.1f}s extra delay (user distraction simulation)")
+            base += extra
+        
+        return base
+
     def _respect_crawl_delay(self):
         """Enforce crawl delay between top-level navigations with jitter."""
         if self.crawl_delay <= 0 or self._last_navigation == 0.0:
@@ -268,6 +284,114 @@ class SSRNScraper:
         self._last_navigation = time.time()
         self._human_pause(1.4, jitter=0.4)
         return drv
+
+    def _detect_cloudflare_challenge(self) -> bool:
+        """
+        Detect if current page is a Cloudflare challenge page.
+        Looks for Cloudflare-specific markers in page source.
+        """
+        try:
+            page_source = self.driver.page_source.lower() if self.driver else ""
+            
+            # Multiple markers for Cloudflare challenge pages
+            markers = [
+                'data-cfasync',
+                'cf_clearance',
+                'challenge' in page_source and 'cloudflare' in page_source,
+                '__cf_bm',
+            ]
+            
+            if any(markers):
+                print("  ⚠️  Cloudflare challenge detected!")
+                return True
+        except Exception as e:
+            print(f"  ℹ️  Could not check for Cloudflare challenge: {type(e).__name__}")
+        
+        return False
+    
+    def _wait_for_cloudflare_cookie(self, timeout: int = 10) -> bool:
+        """
+        Wait for Cloudflare's clearance cookie (__cf_bm) after challenge completes.
+        Cloudflare's JS challenge typically completes in ~5 seconds.
+        """
+        if not self.driver:
+            return False
+        
+        print(f"  ⏳ Waiting for Cloudflare clearance (up to {timeout}s)...")
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            try:
+                cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
+                if '__cf_bm' in cookies or 'cf_clearance' in cookies:
+                    print("  ✓ Cloudflare cookie acquired! Challenge passed.")
+                    time.sleep(2)  # Extra buffer for page to fully load
+                    return True
+            except Exception as e:
+                print(f"  ℹ️  Cookie check error: {type(e).__name__}")
+            
+            time.sleep(0.5)  # Check every 500ms
+        
+        print(f"  ✗ Cloudflare clearance timeout after {timeout}s")
+        return False
+    
+    def _is_cloudflare_or_blocked_page(self) -> Tuple[bool, Optional[str]]:
+        """
+        Detect if current page is a Cloudflare challenge or IP block page.
+        Returns: (is_challenge_or_block, page_type)
+        """
+        try:
+            page_source = self.driver.page_source if self.driver else ""
+            
+            # Check for Cloudflare challenge
+            if self._detect_cloudflare_challenge():
+                return True, "cloudflare_challenge"
+            
+            # Check for rate limit / IP block pages
+            if any(indicator in page_source for indicator in [
+                '403 Forbidden',
+                '429 Too Many Requests',
+                'Access Denied',
+                'Too Many Requests',
+            ]):
+                print("  ✗ IP blocked or rate limited (403/429 response)")
+                return True, "ip_blocked"
+                
+        except Exception as e:
+            print(f"  ℹ️  Page check error: {type(e).__name__}")
+        
+        return False, None
+    
+    def _handle_cloudflare_challenge(self, url: str, max_attempts: int = 3) -> bool:
+        """
+        Attempt to handle Cloudflare challenge by waiting for clearance.
+        Retries with exponential backoff if initial attempt fails.
+        """
+        for attempt in range(max_attempts):
+            print(f"  → Navigating (attempt {attempt + 1}/{max_attempts})...")
+            self._load_url(url)
+            
+            # Check for challenge immediately
+            is_challenge, page_type = self._is_cloudflare_or_blocked_page()
+            
+            if page_type == "cloudflare_challenge":
+                if self._wait_for_cloudflare_cookie(timeout=15):
+                    return True  # Challenge passed
+                else:
+                    if attempt < max_attempts - 1:
+                        wait_time = 5 * (attempt + 1)  # Exponential backoff: 5s, 10s, 15s
+                        print(f"  ⏳ Retry in {wait_time}s...")
+                        time.sleep(wait_time)
+                    continue
+            elif page_type == "ip_blocked":
+                print(f"  ✗ IP appears to be blocked. Consider using a proxy.")
+                return False
+            else:
+                # No challenge detected, page loaded normally
+                return True
+        
+        print(f"  ✗ Failed to bypass Cloudflare after {max_attempts} attempts")
+        return False
 
     def _type_like_human(self, element, text: str):
         """Send keys with small pauses to imitate manual typing."""
@@ -334,7 +458,8 @@ class SSRNScraper:
     
     def search_ssrn_and_extract_urls(self, title: str, timeout: int = 10) -> Tuple[bool, Optional[str], List[Tuple[str, str, str]]]:
         """
-        Search for a title on SSRN and extract URLs directly from search results
+        Search for a title on SSRN and extract URLs directly from search results.
+        Now handles Cloudflare challenges.
         
         Args:
             title: Article title to search for
@@ -347,16 +472,17 @@ class SSRNScraper:
         ssrn_url = "https://www.ssrn.com/index.cfm/en/"
         
         try:
-            # Navigate to SSRN homepage
+            # Navigate to SSRN homepage with Cloudflare challenge handling
             print(f"  → Navigating to SSRN homepage...")
-            drv = self._load_url(ssrn_url)
+            if not self._handle_cloudflare_challenge(ssrn_url):
+                return False, "Could not bypass Cloudflare challenge on homepage", []
             
             # Accept cookies on first search
             self.accept_cookies(timeout)
             
             # Wait for and fill search box
             print(f"  → Waiting for search box...")
-            search_box = WebDriverWait(drv, timeout).until(
+            search_box = WebDriverWait(self._get_driver(), timeout).until(
                 EC.presence_of_element_located((By.ID, "txtKeywords"))
             )
             print(f"  → Filling search box...")
@@ -380,7 +506,7 @@ class SSRNScraper:
             
             # Click search button
             print(f"  → Clicking search button...")
-            search_button = WebDriverWait(drv, timeout).until(
+            search_button = WebDriverWait(self._get_driver(), timeout).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "#searchForm1 > div.big-search > div"))
             )
             self._human_pause(0.5, 0.5)
@@ -389,7 +515,7 @@ class SSRNScraper:
             
             # Wait for results to load - wait for actual paper titles to appear
             print(f"  → Waiting for search results...")
-            WebDriverWait(drv, timeout).until(
+            WebDriverWait(self._get_driver(), timeout).until(
                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, "h3[data-component='Typography'] a"))
             )
             
@@ -401,7 +527,7 @@ class SSRNScraper:
             results = []
             
             # Re-fetch elements to avoid stale element reference issues
-            result_elements = drv.find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
+            result_elements = self._get_driver().find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
             print(f"  ✓ Found {len(result_elements)} result elements")
             
             for idx, element in enumerate(result_elements):
@@ -498,7 +624,11 @@ class SSRNScraper:
         # Now navigate directly to the paper page to get full abstract
         try:
             print(f"  → Navigating to paper page...")
-            drv = self._load_url(best_url)
+            if not self._handle_cloudflare_challenge(best_url):
+                # Challenge handling failed, return URL without abstract
+                print(f"  ⚠️  Could not bypass Cloudflare on paper page")
+                return best_url, None, int(best_similarity), None
+            
             self._human_pause(1.6, 0.5)
             
             # Try multiple methods to extract abstract
@@ -510,7 +640,7 @@ class SSRNScraper:
                 print(f"  ✓ Extracted abstract ({len(abstract)} chars)")
             
             # Capture the HTML content from the paper page
-            html_content = drv.page_source
+            html_content = self.driver.page_source
             
             return best_url, abstract, int(best_similarity), html_content
             
@@ -814,9 +944,11 @@ class SSRNScraper:
                     stats['failed'] += 1
                     self.repo.log_processing(doi, 'scrape_ssrn', 'failed', result['error_message'])
                 
-                # Respect crawl delay (only between successful/normal operations)
+                # Respect variable crawl delay (only between successful/normal operations)
                 if idx < len(articles_df) - 1:  # Don't delay after last item
-                    time.sleep(self.crawl_delay)
+                    delay = self._get_next_delay()
+                    print(f"  ⏳ Next article in {delay:.1f}s...")
+                    time.sleep(delay)
             
         finally:
             # Clean up
