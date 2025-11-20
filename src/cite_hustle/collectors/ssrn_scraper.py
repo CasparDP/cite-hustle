@@ -70,8 +70,8 @@ FINGERPRINT_PROFILES = [
 
 class SSRNScraper:
     """Scrapes SSRN to find papers and extracting abstracts using direct URLs"""
-    
-    def __init__(self, repo: ArticleRepository, 
+
+    def __init__(self, repo: ArticleRepository,
                  crawl_delay: int = 35,
                  similarity_threshold: int = 85,
                  length_similarity_weight: float = 0.3,
@@ -81,7 +81,7 @@ class SSRNScraper:
                  backoff_factor: float = 2.0):
         """
         Initialize SSRN scraper
-        
+
         Args:
             repo: Article repository for database access
             crawl_delay: Seconds to wait between requests
@@ -101,30 +101,30 @@ class SSRNScraper:
         self.html_storage_dir.mkdir(parents=True, exist_ok=True)
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
-        
+
         self.driver: Optional[webdriver.Chrome] = None
         self.cookies_accepted = False
         self.fingerprint = None
         self._last_navigation = 0.0
-    
+
     def _get_driver(self) -> webdriver.Chrome:
         """Return initialized WebDriver or raise if not set."""
         if self.driver is None:
             raise RuntimeError("WebDriver not initialized. Call setup_webdriver() first.")
         return self.driver
-    
+
     def _convert_to_portable_path(self, absolute_path: str) -> str:
         """
         Convert absolute path to portable HOME-based path.
-        
+
         Args:
             absolute_path: Absolute file path like /Users/casparm2/Dropbox/...
-            
+
         Returns:
             Portable path like $HOME/Dropbox/...
         """
         path = Path(absolute_path)
-        
+
         # Find if path starts with any /Users/username pattern
         parts = path.parts
         if len(parts) >= 3 and parts[0] == '/' and parts[1] == 'Users':
@@ -132,36 +132,36 @@ class SSRNScraper:
             relative_parts = parts[3:]  # Skip /, Users, username
             portable_path = '$HOME/' + '/'.join(relative_parts)
             return portable_path
-        
+
         # If it doesn't match expected pattern, return as-is
         return absolute_path
-    
+
     def setup_webdriver(self):
         """Set up Selenium WebDriver with comprehensive anti-detection options"""
         chrome_options = Options()
-        
+
         # Select a coherent fingerprint for this session
         self.fingerprint = random.choice(FINGERPRINT_PROFILES).copy()
         fingerprint = self.fingerprint
         user_agent = fingerprint["user_agent"]
         self.cookies_accepted = False
         self._last_navigation = 0.0
-        
+
         if self.headless:
             chrome_options.add_argument("--headless=new")
-        
+
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument(f"--lang={fingerprint['languages'][0]}")
-        
+
         # Randomize window size within the profile's envelope
         min_w, max_w, min_h, max_h = fingerprint["window_bounds"]
         width = random.randint(min_w, max_w)
         height = random.randint(min_h, max_h)
         chrome_options.add_argument(f"--window-size={width},{height}")
         chrome_options.add_argument(f"--user-agent={user_agent}")
-        
+
         # Critical: Disable automation flags that websites can detect
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_argument("--disable-infobars")
@@ -171,7 +171,7 @@ class SSRNScraper:
             "prefs",
             {"intl.accept_languages": ",".join(fingerprint["languages"])}
         )
-        
+
         # Initialize driver
         self.driver = webdriver.Chrome(options=chrome_options)
 
@@ -189,7 +189,7 @@ class SSRNScraper:
             print(f"  ✓ Stealth mode enabled with profile: {fingerprint['name']}")
         except Exception as e:
             print(f"  ℹ️  Could not apply selenium-stealth: {type(e).__name__}: {e}")
-        
+
         self._apply_fingerprint_overrides()
         return self.driver
 
@@ -255,13 +255,13 @@ class SSRNScraper:
         Reduces bot signature detection.
         """
         base = random.uniform(self.crawl_delay * 0.5, self.crawl_delay * 1.5)
-        
+
         # 12% chance of extra-long pause (user got distracted, checking email, etc.)
         if random.random() < 0.12:
             extra = random.uniform(30, 120)
             print(f"    [Human pause] Adding {extra:.1f}s extra delay (user distraction simulation)")
             base += extra
-        
+
         return base
 
     def _respect_crawl_delay(self):
@@ -292,7 +292,7 @@ class SSRNScraper:
         """
         try:
             page_source = self.driver.page_source.lower() if self.driver else ""
-            
+
             # Multiple markers for Cloudflare challenge pages
             markers = [
                 'data-cfasync',
@@ -300,15 +300,15 @@ class SSRNScraper:
                 'challenge' in page_source and 'cloudflare' in page_source,
                 '__cf_bm',
             ]
-            
+
             if any(markers):
                 print("  ⚠️  Cloudflare challenge detected!")
                 return True
         except Exception as e:
             print(f"  ℹ️  Could not check for Cloudflare challenge: {type(e).__name__}")
-        
+
         return False
-    
+
     def _wait_for_cloudflare_cookie(self, timeout: int = 10) -> bool:
         """
         Wait for Cloudflare's clearance cookie (__cf_bm) after challenge completes.
@@ -316,10 +316,10 @@ class SSRNScraper:
         """
         if not self.driver:
             return False
-        
+
         print(f"  ⏳ Waiting for Cloudflare clearance (up to {timeout}s)...")
         start = time.time()
-        
+
         while time.time() - start < timeout:
             try:
                 cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
@@ -329,12 +329,12 @@ class SSRNScraper:
                     return True
             except Exception as e:
                 print(f"  ℹ️  Cookie check error: {type(e).__name__}")
-            
+
             time.sleep(0.5)  # Check every 500ms
-        
+
         print(f"  ✗ Cloudflare clearance timeout after {timeout}s")
         return False
-    
+
     def _is_cloudflare_or_blocked_page(self) -> Tuple[bool, Optional[str]]:
         """
         Detect if current page is a Cloudflare challenge or IP block page.
@@ -342,11 +342,11 @@ class SSRNScraper:
         """
         try:
             page_source = self.driver.page_source if self.driver else ""
-            
+
             # Check for Cloudflare challenge
             if self._detect_cloudflare_challenge():
                 return True, "cloudflare_challenge"
-            
+
             # Check for rate limit / IP block pages
             if any(indicator in page_source for indicator in [
                 '403 Forbidden',
@@ -356,12 +356,12 @@ class SSRNScraper:
             ]):
                 print("  ✗ IP blocked or rate limited (403/429 response)")
                 return True, "ip_blocked"
-                
+
         except Exception as e:
             print(f"  ℹ️  Page check error: {type(e).__name__}")
-        
+
         return False, None
-    
+
     def _handle_cloudflare_challenge(self, url: str, max_attempts: int = 3) -> bool:
         """
         Attempt to handle Cloudflare challenge by waiting for clearance.
@@ -370,10 +370,10 @@ class SSRNScraper:
         for attempt in range(max_attempts):
             print(f"  → Navigating (attempt {attempt + 1}/{max_attempts})...")
             self._load_url(url)
-            
+
             # Check for challenge immediately
             is_challenge, page_type = self._is_cloudflare_or_blocked_page()
-            
+
             if page_type == "cloudflare_challenge":
                 if self._wait_for_cloudflare_cookie(timeout=15):
                     return True  # Challenge passed
@@ -389,7 +389,7 @@ class SSRNScraper:
             else:
                 # No challenge detected, page loaded normally
                 return True
-        
+
         print(f"  ✗ Failed to bypass Cloudflare after {max_attempts} attempts")
         return False
 
@@ -402,12 +402,12 @@ class SSRNScraper:
             time.sleep(random.uniform(0.07, 0.22))
             if random.random() < 0.08:
                 time.sleep(random.uniform(0.18, 0.35))
-    
+
     def accept_cookies(self, timeout: int = 10):
         """Accept cookies if banner appears"""
         if self.cookies_accepted:
             return
-        
+
         try:
             drv = self._get_driver()
             cookie_button = WebDriverWait(drv, timeout).until(
@@ -421,69 +421,69 @@ class SSRNScraper:
         except TimeoutException:
             # No cookie banner or already accepted
             self.cookies_accepted = True
-    
+
     def _calculate_combined_similarity(self, db_title: str, result_title: str) -> float:
         """
         Calculate combined similarity score considering both fuzzy match and length
-        
+
         Args:
             db_title: Original title from database
             result_title: Title from search result
-            
+
         Returns:
             Combined similarity score (0-100)
         """
         # Fuzzy match score
         fuzzy_score = fuzz.partial_ratio(db_title.lower(), result_title.lower())
-        
+
         # Length similarity score
         db_words = len(db_title.split())
         result_words = len(result_title.split())
-        
+
         if db_words == 0 or result_words == 0:
             length_score = 0
         else:
             # Calculate word count ratio (closer to 1.0 is better)
             word_ratio = min(db_words, result_words) / max(db_words, result_words)
             length_score = word_ratio * 100
-        
+
         # Combined score: weighted average
         # Default: 70% fuzzy match + 30% length similarity
         combined_score = (
             (1 - self.length_similarity_weight) * fuzzy_score +
             self.length_similarity_weight * length_score
         )
-        
+
         return combined_score
-    
+
     def search_ssrn_and_extract_urls(self, title: str, timeout: int = 10) -> Tuple[bool, Optional[str], List[Tuple[str, str, str]]]:
         """
         Search for a title on SSRN and extract URLs directly from search results.
         Now handles Cloudflare challenges.
-        
+
         Args:
             title: Article title to search for
             timeout: Max seconds to wait for page elements
-            
+
         Returns:
             Tuple of (success, error_message, results_list)
             results_list contains: [(url, title, abstract_snippet), ...]
         """
-        ssrn_url = "https://www.ssrn.com/index.cfm/en/"
-        
+        ssrn_url = "https://www.ssrn.com/ssrn/"
+
         try:
             # Navigate to SSRN homepage with Cloudflare challenge handling
             print(f"  → Navigating to SSRN homepage...")
             if not self._handle_cloudflare_challenge(ssrn_url):
                 return False, "Could not bypass Cloudflare challenge on homepage", []
-            
+
             # Accept cookies on first search
             self.accept_cookies(timeout)
-            
+
             # Wait for and fill search box
             print(f"  → Waiting for search box...")
             search_box = WebDriverWait(self._get_driver(), timeout).until(
-                EC.presence_of_element_located((By.ID, "txtKeywords"))
+                EC.presence_of_element_located((By.NAME, "term"))
             )
             print(f"  → Filling search box...")
             search_box.click()
@@ -492,7 +492,7 @@ class SSRNScraper:
             self._human_pause(0.4, 0.5)
             self._type_like_human(search_box, title)
             self._human_pause(0.6, 0.6)
-            
+
             # Verify text was entered
             entered_text = search_box.get_attribute('value')
             if not entered_text or len(entered_text) < 5:
@@ -503,38 +503,38 @@ class SSRNScraper:
                 self._human_pause(0.5, 0.5)
                 self._type_like_human(search_box, title)
                 self._human_pause(0.7, 0.5)
-            
+
             # Click search button
             print(f"  → Clicking search button...")
             search_button = WebDriverWait(self._get_driver(), timeout).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "#searchForm1 > div.big-search > div"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-input-wrapper button[type='Submit']"))
             )
             self._human_pause(0.5, 0.5)
             search_button.click()
             self._human_pause(1.2, 0.6)
-            
+
             # Wait for results to load - wait for actual paper titles to appear
             print(f"  → Waiting for search results...")
             WebDriverWait(self._get_driver(), timeout).until(
                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, "h3[data-component='Typography'] a"))
             )
-            
+
             # Also wait a moment for all elements to fully render
             self._human_pause(1.0, 0.5)
-            
+
             # Extract paper information directly from search results
             print(f"  → Extracting paper URLs from search results...")
             results = []
-            
+
             # Re-fetch elements to avoid stale element reference issues
             result_elements = self._get_driver().find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
             print(f"  ✓ Found {len(result_elements)} result elements")
-            
+
             for idx, element in enumerate(result_elements):
                 try:
                     paper_title = element.text.strip()
                     paper_url = element.get_attribute('href')
-                    
+
                     if paper_url and paper_title:
                         # We'll get the full abstract from the paper page later
                         results.append((paper_url, paper_title, ""))
@@ -544,16 +544,16 @@ class SSRNScraper:
                     # Skip individual result if there's an error
                     print(f"  ⚠️  Error extracting result {idx}: {type(e).__name__}: {str(e)}")
                     continue
-            
+
             print(f"  ✓ Extracted {len(results)} valid results")
             return True, None, results
-            
+
         except TimeoutException as e:
             # Save screenshot for debugging
             screenshot_path = self._save_error_screenshot(title)
             current_url = self.driver.current_url if self.driver else "unknown"
             page_title = self.driver.title if self.driver else "unknown"
-            
+
             error_msg = (
                 f"Timeout waiting for page elements. "
                 f"Current URL: {current_url}, Page title: '{page_title}'. "
@@ -570,33 +570,33 @@ class SSRNScraper:
             error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             print(f"✗ Error searching SSRN for '{title}': {error_msg}")
             return False, error_msg, []
-    
-    def extract_best_result(self, db_title: str, 
+
+    def extract_best_result(self, db_title: str,
                            results: List[Tuple[str, str, str]],
                            max_results: int = 8) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
         """
         Find the best matching result using combined similarity scoring
-        
+
         Args:
             db_title: Original title from database
             results: List of (url, title, abstract_snippet) tuples from search
             max_results: Maximum number of results to consider
-            
+
         Returns:
             Tuple of (ssrn_url, abstract, match_score, html_content) or (None, error_message, None, None)
         """
         if not results:
             return None, "No search results found", None, None
-        
+
         # Calculate combined similarity scores for each result
         scored_results = []
         for idx, (url, title, snippet) in enumerate(results[:max_results]):
             similarity = self._calculate_combined_similarity(db_title, title)
             scored_results.append((similarity, idx, title, url, snippet))
-        
+
         # Sort by similarity (descending), with tie-breaker on index (ascending)
         scored_results.sort(key=lambda x: (-x[0], x[1]))
-        
+
         # Log all matches
         print(f"  Results with combined similarity scores:")
         for similarity, idx, title, url, _ in scored_results:
@@ -605,22 +605,22 @@ class SSRNScraper:
             db_words = len(db_title.split())
             result_words = len(title.split())
             word_ratio = min(db_words, result_words) / max(db_words, result_words) if max(db_words, result_words) > 0 else 0
-            
+
             print(f"    [{idx}] Score: {similarity:.1f} (fuzzy: {fuzzy}, length: {word_ratio:.2f}, words: {result_words}/{db_words})")
             print(f"        Title: {title[:80]}...")
-        
+
         # Get best match
         best_similarity, _, best_title, best_url, _ = scored_results[0]
-        
+
         # Check if match is good enough
         if best_similarity < self.similarity_threshold:
             message = f"No match above threshold {self.similarity_threshold}. Best: {best_similarity:.1f}"
             print(f"  ⚠️  {message}")
             return None, message, int(best_similarity), None
-        
+
         print(f"  ✓ Selected: {best_title[:60]}... (score: {best_similarity:.1f})")
         print(f"  ✓ URL: {best_url}")
-        
+
         # Now navigate directly to the paper page to get full abstract
         try:
             print(f"  → Navigating to paper page...")
@@ -628,32 +628,32 @@ class SSRNScraper:
                 # Challenge handling failed, return URL without abstract
                 print(f"  ⚠️  Could not bypass Cloudflare on paper page")
                 return best_url, None, int(best_similarity), None
-            
+
             self._human_pause(1.6, 0.5)
-            
+
             # Try multiple methods to extract abstract
             abstract = self._extract_abstract_from_page()
-            
+
             if not abstract:
                 print(f"  ⚠️  Warning: Could not extract abstract, but page loaded")
             else:
                 print(f"  ✓ Extracted abstract ({len(abstract)} chars)")
-            
+
             # Capture the HTML content from the paper page
             html_content = self.driver.page_source
-            
+
             return best_url, abstract, int(best_similarity), html_content
-            
+
         except Exception as e:
             error_msg = f"Error extracting abstract from paper page: {type(e).__name__}: {str(e)}"
             print(f"  ⚠️  {error_msg}")
             # Return URL anyway, even if abstract extraction failed, but no HTML
             return best_url, None, int(best_similarity), None
-    
+
     def _extract_abstract_from_page(self) -> Optional[str]:
         """
         Extract abstract from SSRN paper page using multiple strategies
-        
+
         Returns:
             Abstract text or None if not found
         """
@@ -667,7 +667,7 @@ class SSRNScraper:
             # Strategy 4: Any div containing "Abstract" header
             lambda: self._extract_from_abstract_div(),
         ]
-        
+
         for idx, strategy in enumerate(strategies, 1):
             try:
                 abstract = strategy()
@@ -676,25 +676,25 @@ class SSRNScraper:
             except Exception as e:
                 # Strategy failed, try next one
                 continue
-        
+
         return None
-    
+
     def _extract_by_selector(self, selector: str, include_header: bool = False, direct_text: bool = False) -> Optional[str]:
         """
         Extract abstract using CSS selector
-        
+
         Args:
             selector: CSS selector for abstract container
             include_header: Whether to include h3 header text
             direct_text: Get direct text instead of paragraphs
-            
+
         Returns:
             Abstract text or None
         """
         try:
             drv = self._get_driver()
             abstract_div = drv.find_element(By.CSS_SELECTOR, selector)
-            
+
             if direct_text:
                 # Get all text directly
                 return abstract_div.text.strip().replace('Abstract\n', '').strip()
@@ -704,19 +704,19 @@ class SSRNScraper:
                 if paragraphs:
                     abstract = " ".join(p.text.strip() for p in paragraphs if p.text.strip())
                     return abstract if abstract else None
-                
+
         except:
             pass
-        
+
         return None
-    
+
     def _extract_after_header(self, header_text: str) -> Optional[str]:
         """
         Find Abstract header and extract following paragraphs
-        
+
         Args:
             header_text: Header text to search for (e.g., "Abstract")
-            
+
         Returns:
             Abstract text or None
         """
@@ -724,25 +724,25 @@ class SSRNScraper:
             # Find all h3 elements
             drv = self._get_driver()
             headers = drv.find_elements(By.TAG_NAME, "h3")
-            
+
             for header in headers:
                 if header_text.lower() in header.text.lower():
                     # Found the Abstract header, get parent and extract paragraphs
                     parent = header.find_element(By.XPATH, "./..")
                     paragraphs = parent.find_elements(By.TAG_NAME, "p")
-                    
+
                     if paragraphs:
                         abstract = " ".join(p.text.strip() for p in paragraphs if p.text.strip())
                         return abstract if abstract else None
         except:
             pass
-        
+
         return None
-    
+
     def _extract_from_abstract_div(self) -> Optional[str]:
         """
         Find any div containing Abstract and extract text
-        
+
         Returns:
             Abstract text or None
         """
@@ -750,7 +750,7 @@ class SSRNScraper:
             # Find all divs
             drv = self._get_driver()
             divs = drv.find_elements(By.TAG_NAME, "div")
-            
+
             for div in divs:
                 # Check if this div contains "Abstract" header
                 class_attr = div.get_attribute("class") or ""
@@ -762,16 +762,16 @@ class SSRNScraper:
                         return text
         except:
             pass
-        
+
         return None
-    
+
     def _save_error_screenshot(self, title: str) -> Optional[str]:
         """
         Save screenshot when an error occurs
-        
+
         Args:
             title: Article title (used for filename)
-            
+
         Returns:
             Path to saved screenshot or None if failed
         """
@@ -779,26 +779,26 @@ class SSRNScraper:
             drv = self.driver
             if not drv:
                 return None
-                
+
             # Create safe filename from title
             safe_filename = title[:50].replace('/', '_').replace('\\', '_').replace(' ', '_')
             timestamp = time.strftime('%Y%m%d_%H%M%S')
             filepath = self.html_storage_dir / f"ERROR_{safe_filename}_{timestamp}.png"
-            
+
             drv.save_screenshot(str(filepath))
             return str(filepath)
         except Exception as e:
             print(f"  ⚠️  Failed to save screenshot: {e}")
             return None
-    
+
     def save_html(self, doi: str, html_content: str) -> Optional[str]:
         """
         Save HTML content to file
-        
+
         Args:
             doi: Article DOI (used for filename)
             html_content: HTML to save
-            
+
         Returns:
             Path to saved file or None if failed
         """
@@ -806,26 +806,26 @@ class SSRNScraper:
             # Create safe filename from DOI
             safe_filename = doi.replace('/', '_').replace('\\', '_')
             filepath = self.html_storage_dir / f"{safe_filename}.html"
-            
+
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(html_content)
-            
+
             print(f"  ✓ Saved HTML to: {filepath}")
             # Return portable path for database storage
             return self._convert_to_portable_path(str(filepath))
         except Exception as e:
             print(f"⚠️  Failed to save HTML for {doi}: {e}")
             return None
-    
+
     def scrape_article(self, doi: str, title: str, retry_count: int = 0) -> Dict:
         """
         Scrape SSRN for a single article with exponential backoff retry logic
-        
+
         Args:
             doi: Article DOI
             title: Article title to search for
             retry_count: Current retry attempt (for internal use)
-            
+
         Returns:
             Dictionary with scraping results
         """
@@ -838,33 +838,33 @@ class SSRNScraper:
             'error_message': None,
             'success': False
         }
-        
+
         try:
             # Search SSRN and extract URLs from results page
             search_success, search_error, results = self.search_ssrn_and_extract_urls(title)
-            
+
             if not search_success:
                 # Check if we should retry
                 if retry_count < self.max_retries and search_error:
                     wait_time = self.crawl_delay * (self.backoff_factor ** retry_count)
                     print(f"  ⏳ Retry {retry_count + 1}/{self.max_retries} after {wait_time}s...")
                     time.sleep(wait_time)
-                    
+
                     # Retry the scrape
                     return self.scrape_article(doi, title, retry_count + 1)
-                
+
                 result['error_message'] = search_error or "Failed to search SSRN"
                 return result
-            
+
             # Find best matching result using combined similarity
             ssrn_url, abstract, match_score, html_content = self.extract_best_result(title, results)
-            
+
             if ssrn_url:
                 # Success - save HTML and results
                 html_path = None
                 if html_content:
                     html_path = self.save_html(doi, html_content)
-                
+
                 result.update({
                     'ssrn_url': ssrn_url,
                     'abstract': abstract,
@@ -876,23 +876,23 @@ class SSRNScraper:
                 # No match or error
                 result['error_message'] = abstract  # abstract contains error message when ssrn_url is None
                 result['match_score'] = match_score
-            
+
             return result
-            
+
         except Exception as e:
             error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             result['error_message'] = error_msg
             print(f"✗ {error_msg}")
             return result
-    
+
     def scrape_articles(self, articles_df, show_progress: bool = True) -> Dict:
         """
         Scrape multiple articles from SSRN
-        
+
         Args:
             articles_df: DataFrame with 'doi' and 'title' columns
             show_progress: Show progress bar
-            
+
         Returns:
             Dictionary with statistics
         """
@@ -902,26 +902,26 @@ class SSRNScraper:
             'failed': 0,
             'no_match': 0
         }
-        
+
         # Setup webdriver
         self.setup_webdriver()
-        
+
         try:
-            iterator = tqdm(articles_df.iterrows(), total=len(articles_df), 
+            iterator = tqdm(articles_df.iterrows(), total=len(articles_df),
                           desc="Scraping SSRN") if show_progress else articles_df.iterrows()
-            
+
             for idx, row in iterator:
                 doi = row['doi']
                 title = row['title']
-                
+
                 if show_progress:
                     tqdm.write(f"\n{idx + 1}/{len(articles_df)}: {title[:60]}...")
                 else:
                     print(f"\n{idx + 1}/{len(articles_df)}: {title[:60]}...")
-                
+
                 # Scrape article
                 result = self.scrape_article(doi, title)
-                
+
                 # Save to database
                 self.repo.insert_ssrn_page(
                     doi=result['doi'],
@@ -932,7 +932,7 @@ class SSRNScraper:
                     match_score=result['match_score'],
                     error_message=result['error_message']
                 )
-                
+
                 # Log processing
                 if result['success']:
                     stats['success'] += 1
@@ -943,16 +943,16 @@ class SSRNScraper:
                 else:
                     stats['failed'] += 1
                     self.repo.log_processing(doi, 'scrape_ssrn', 'failed', result['error_message'])
-                
+
                 # Respect variable crawl delay (only between successful/normal operations)
                 if idx < len(articles_df) - 1:  # Don't delay after last item
                     delay = self._get_next_delay()
                     print(f"  ⏳ Next article in {delay:.1f}s...")
                     time.sleep(delay)
-            
+
         finally:
             # Clean up
             if self.driver:
                 self.driver.quit()
-        
+
         return stats

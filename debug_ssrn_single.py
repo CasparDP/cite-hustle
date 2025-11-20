@@ -37,14 +37,14 @@ scraper.setup_webdriver()
 
 try:
     print("\nAttempting to search SSRN...")
-    success, error = scraper.search_ssrn(test_title, timeout=15)
-    
+    success, error, results = scraper.search_ssrn_and_extract_urls(test_title, timeout=15)
+
     if success:
         print("\n✓ Search succeeded!")
         print("\nNow attempting to extract results...")
-        
-        ssrn_url, abstract, match_score = scraper.extract_best_result(test_title, timeout=15)
-        
+
+        ssrn_url, abstract, match_score, html_content = scraper.extract_best_result(test_title, results)
+
         if ssrn_url:
             print(f"\n✓ SUCCESS!")
             print(f"  SSRN URL: {ssrn_url}")
@@ -59,21 +59,21 @@ try:
         print("  - CAPTCHA challenge")
         print("  - Rate limiting block")
         print("  - Changed page structure")
-        
+
         # Save current page for debugging
         if scraper.driver:
             print(f"\nCurrent URL: {scraper.driver.current_url}")
             print(f"Page title: {scraper.driver.title}")
-            
+
             # Save the HTML
             html_path = scraper.html_storage_dir / "debug_failed_page.html"
             with open(html_path, 'w') as f:
                 f.write(scraper.driver.page_source)
             print(f"Saved page HTML to: {html_path}")
             print("You can open this file in a browser to inspect it.")
-            
+
     input("\nPress Enter to close browser and exit...")
-    
+
 finally:
     if scraper.driver:
         scraper.driver.quit()

@@ -33,9 +33,9 @@ driver = webdriver.Chrome(options=chrome_options)
 try:
     # Navigate to SSRN
     print("\n1. Navigating to SSRN...")
-    driver.get("https://www.ssrn.com/index.cfm/en/")
+    driver.get("https://www.ssrn.com/ssrn/")
     time.sleep(2)
-    
+
     # Accept cookies if present
     try:
         cookie_button = WebDriverWait(driver, 5).until(
@@ -46,42 +46,42 @@ try:
         time.sleep(1)
     except:
         print("✓ No cookie banner or already accepted")
-    
+
     # Find and fill search box
     print("\n2. Finding search box...")
     search_box = WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.ID, "txtKeywords"))
+        EC.presence_of_element_located((By.NAME, "term"))
     )
     print(f"✓ Found search box: {search_box.tag_name}")
-    
+
     search_box.clear()
     search_box.send_keys(test_title)
     print(f"✓ Entered search term: {test_title}")
-    
+
     # Click search
     print("\n3. Clicking search button...")
     search_button = WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "#searchForm1 > div.big-search > div"))
+        EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-input-wrapper button[type='Submit']"))
     )
     search_button.click()
     print("✓ Clicked search button")
-    
+
     # Wait for results page to load
     print("\n4. Waiting for results to load...")
     time.sleep(3)
-    
+
     print(f"\n5. Current URL: {driver.current_url}")
     print(f"   Page title: {driver.title}")
-    
+
     # Save the full HTML
     html_path = Path("debug_ssrn_search_results.html")
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(driver.page_source)
     print(f"\n✓ Saved full HTML to: {html_path.absolute()}")
-    
+
     # Try multiple selector strategies to find results
     print("\n6. Testing different selectors to find paper results...")
-    
+
     selectors_to_test = [
         ("h3[data-component='Typography'] a", "Original selector"),
         ("h3 a", "Any h3 with link"),
@@ -94,13 +94,13 @@ try:
         ("div[class*='paper']", "Divs with 'paper' in class"),
         ("h1, h2, h3, h4", "All headers"),
     ]
-    
+
     for selector, description in selectors_to_test:
         try:
             elements = driver.find_elements(By.CSS_SELECTOR, selector)
             print(f"\n   [{selector}] - {description}")
             print(f"   Found: {len(elements)} elements")
-            
+
             if elements:
                 for i, elem in enumerate(elements[:3]):  # Show first 3
                     try:
@@ -114,11 +114,11 @@ try:
         except Exception as e:
             print(f"\n   [{selector}] - {description}")
             print(f"   Error: {e}")
-    
+
     # Check page source for key text
     print("\n7. Checking page source for indicators...")
     page_source = driver.page_source.lower()
-    
+
     indicators = [
         ("results found", "Results counter"),
         ("no results", "No results message"),
@@ -129,13 +129,13 @@ try:
         ("rate limit", "Rate limiting"),
         ("too many requests", "Rate limit message"),
     ]
-    
+
     for text, description in indicators:
         if text in page_source:
             print(f"   ✓ Found: '{text}' ({description})")
         else:
             print(f"   ✗ Not found: '{text}' ({description})")
-    
+
     # Extract main content area
     print("\n8. Extracting main content area...")
     try:
@@ -145,12 +145,12 @@ try:
         print(f"   {main_content.text[:500]}")
     except:
         print("   ✗ Could not find #maincontent")
-    
+
     # Take screenshot
     screenshot_path = Path("debug_ssrn_search_results.png")
     driver.save_screenshot(str(screenshot_path))
     print(f"\n✓ Saved screenshot to: {screenshot_path.absolute()}")
-    
+
     print("\n" + "=" * 80)
     print("NEXT STEPS:")
     print("1. Open debug_ssrn_search_results.html in a browser")
@@ -158,7 +158,7 @@ try:
     print("3. Look at the HTML structure")
     print("4. Share the HTML structure with me")
     print("=" * 80)
-    
+
     input("\nPress Enter to close browser...")
 
 finally:
