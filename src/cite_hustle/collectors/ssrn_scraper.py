@@ -469,21 +469,23 @@ class SSRNScraper:
             Tuple of (success, error_message, results_list)
             results_list contains: [(url, title, abstract_snippet), ...]
         """
-        ssrn_url = "https://www.ssrn.com/ssrn/"
+        ssrn_url = "https://papers.ssrn.com/sol3/DisplayAbstractSearch.cfm"
 
         try:
-            # Navigate to SSRN homepage with Cloudflare challenge handling
-            print(f"  → Navigating to SSRN homepage...")
+            # Navigate to SSRN search page with Cloudflare challenge handling
+            print(f"  → Navigating to SSRN search page...")
             if not self._handle_cloudflare_challenge(ssrn_url):
-                return False, "Could not bypass Cloudflare challenge on homepage", []
+                return False, "Could not bypass Cloudflare challenge on search page", []
 
             # Accept cookies on first search
             self.accept_cookies(timeout)
 
             # Wait for and fill search box
             print(f"  → Waiting for search box...")
+
+            # On the advanced search page, the search box is directly visible with id="term"
             search_box = WebDriverWait(self._get_driver(), timeout).until(
-                EC.presence_of_element_located((By.NAME, "term"))
+                EC.element_to_be_clickable((By.ID, "term"))
             )
             print(f"  → Filling search box...")
             search_box.click()
@@ -491,9 +493,7 @@ class SSRNScraper:
             search_box.clear()
             self._human_pause(0.4, 0.5)
             self._type_like_human(search_box, title)
-            self._human_pause(0.6, 0.6)
-
-            # Verify text was entered
+            self._human_pause(0.6, 0.6)            # Verify text was entered
             entered_text = search_box.get_attribute('value')
             if not entered_text or len(entered_text) < 5:
                 preview = (entered_text or "")[:50]
@@ -504,10 +504,21 @@ class SSRNScraper:
                 self._type_like_human(search_box, title)
                 self._human_pause(0.7, 0.5)
 
+            # Select "Title Only" search scope for better accuracy
+            try:
+                print(f"  → Selecting 'Title Only' search scope...")
+                title_radio = WebDriverWait(self._get_driver(), 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//label[contains(., 'Title Only')]"))
+                )
+                title_radio.click()
+                self._human_pause(0.3, 0.3)
+            except Exception as e:
+                print(f"  ⚠️  Could not select 'Title Only' radio button: {e}")
+
             # Click search button
             print(f"  → Clicking search button...")
             search_button = WebDriverWait(self._get_driver(), timeout).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-input-wrapper button[type='Submit']"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Search']"))
             )
             self._human_pause(0.5, 0.5)
             search_button.click()
@@ -640,7 +651,7 @@ class SSRNScraper:
                 print(f"  ✓ Extracted abstract ({len(abstract)} chars)")
 
             # Capture the HTML content from the paper page
-            html_content = self.driver.page_source
+            html_content = self.driver.page_source if self.driver else None
 
             return best_url, abstract, int(best_similarity), html_content
 

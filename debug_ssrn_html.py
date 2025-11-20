@@ -33,8 +33,8 @@ driver = webdriver.Chrome(options=chrome_options)
 try:
     # Navigate to SSRN
     print("\n1. Navigating to SSRN...")
-    driver.get("https://www.ssrn.com/ssrn/")
-    time.sleep(2)
+    driver.get("https://papers.ssrn.com/sol3/DisplayAbstractSearch.cfm")
+    time.sleep(5)  # Wait longer for Cloudflare
 
     # Accept cookies if present
     try:
@@ -49,6 +49,31 @@ try:
 
     # Find and fill search box
     print("\n2. Finding search box...")
+
+    # Dump HTML to find the selector
+    html_path = Path("debug_ssrn_search_page.html")
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(driver.page_source)
+    print(f"✓ Saved page HTML to: {html_path.absolute()}")
+
+    # Try to find input fields
+    inputs = driver.find_elements(By.TAG_NAME, "input")
+    print(f"\nFound {len(inputs)} input elements:")
+    for i, inp in enumerate(inputs):
+        try:
+            type_attr = inp.get_attribute("type")
+            id_attr = inp.get_attribute("id")
+            name_attr = inp.get_attribute("name")
+            placeholder = inp.get_attribute("placeholder")
+            if type_attr in ["text", "search"]:
+                print(f"  [{i}] type='{type_attr}' id='{id_attr}' name='{name_attr}' placeholder='{placeholder}'")
+        except:
+            pass
+
+    # Temporary exit to check output
+    driver.quit()
+    exit()
+
     search_box = WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.NAME, "term"))
     )
