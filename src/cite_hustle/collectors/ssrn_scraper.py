@@ -10,6 +10,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from rapidfuzz import fuzz
 from tqdm import tqdm
@@ -515,31 +516,88 @@ class SSRNScraper:
             except Exception as e:
                 print(f"  ⚠️  Could not select 'Title Only' radio button: {e}")
 
-            # Click search button
-            print(f"  → Clicking search button...")
-            search_button = WebDriverWait(self._get_driver(), timeout).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Search']"))
-            )
-            self._human_pause(0.5, 0.5)
-            search_button.click()
+            # Click the main advanced-search "Search" button (not the header icon)
+            print(f"    Clicking form search button...")
+            drv = self._get_driver()
+
+            # Try a small sequence of locator strategies to handle layout variations
+            search_locators = [
+                # Primary: button with inner span label-text "Search" (current advanced search UI)
+                (By.XPATH, "//button[.//span[@data-inner-style-target='label-text' and normalize-space()='Search']][not(ancestor::header)]"),
+                # Fallback: any button with visible text "Search" outside the header
+                (By.XPATH, "//button[normalize-space()='Search' and not(ancestor::header)]"),
+                # Fallback: generic aria-label, but again avoid header area
+                (By.XPATH, "//button[@aria-label='Search' and not(ancestor::header)]"),
+            ]
+
+            search_button = None
+            last_error: Optional[Exception] = None
+            for by, locator in search_locators:
+                try:
+                    print(f"    → Trying search button locator: {by} = {locator}")
+                    candidate = WebDriverWait(drv, timeout).until(
+                        EC.element_to_be_clickable((by, locator))
+                    )
+                    search_button = candidate
+                    break
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            if search_button is not None:
+                try:
+                    btn_aria = search_button.get_attribute("aria-label")
+                    btn_text = (search_button.text or "").strip()
+                    print(f"    Using search button with aria-label='{btn_aria}', text='{btn_text}'")
+                except Exception:
+                    pass
+
+                self._human_pause(0.5, 0.5)
+                search_button.click()
+            else:
+                # Fallback: submit the form via ENTER in the search box
+                print("    Could not find a form search button via known locators; submitting via ENTER key...")
+                if last_error:
+                    print(f"      Last locator error: {type(last_error).__name__}: {last_error}")
+                try:
+                    search_box.send_keys(Keys.RETURN)
+                except Exception as e:
+                    raise TimeoutException(f"Could not trigger SSRN search via button or ENTER: {type(e).__name__}: {e}")
+
             self._human_pause(1.2, 0.6)
 
-            # Wait for results to load - wait for actual paper titles to appear
-            print(f"  → Waiting for search results...")
-            WebDriverWait(self._get_driver(), timeout).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "h3[data-component='Typography'] a"))
-            )
+            # Wait for results area to load; first check for explicit "No results." message
+            print(f"   Waiting for search results or 'No results' message...")
+            drv = self._get_driver()
+
+            try:
+                WebDriverWait(drv, timeout).until(
+                    lambda d: (
+                        d.find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
+                        or d.find_elements(By.XPATH, "//h3[@data-component='Typography' and normalize-space()='No results.']")
+                    )
+                )
+            except TimeoutException as e:
+                # Nothing appeared in time; treat as no results for this title
+                print("   Neither results nor 'No results.' message appeared in time; skipping title.")
+                return True, "No results (timeout)", []
+
+            # Check if this search explicitly returned "No results."
+            no_result_elems = drv.find_elements(By.XPATH, "//h3[@data-component='Typography' and normalize-space()='No results.']")
+            if no_result_elems:
+                print("   SSRN reports 'No results.' for this query; moving on without retries.")
+                return True, "No results", []
 
             # Also wait a moment for all elements to fully render
             self._human_pause(1.0, 0.5)
 
             # Extract paper information directly from search results
-            print(f"  → Extracting paper URLs from search results...")
+            print(f"   Extracting paper URLs from search results...")
             results = []
 
             # Re-fetch elements to avoid stale element reference issues
-            result_elements = self._get_driver().find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
-            print(f"  ✓ Found {len(result_elements)} result elements")
+            result_elements = drv.find_elements(By.CSS_SELECTOR, "h3[data-component='Typography'] a")
+            print(f"   Found {len(result_elements)} result elements")
 
             for idx, element in enumerate(result_elements):
                 try:
