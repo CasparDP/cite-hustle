@@ -14,7 +14,7 @@ class Journal:
 
 class JournalRegistry:
     """Central registry for all field-specific journals"""
-    
+
     # Top Accounting Journals
     ACCOUNTING = [
         Journal("The Accounting Review", "0001-4826", "accounting", "AAA"),
@@ -24,7 +24,7 @@ class JournalRegistry:
         Journal("Accounting, Organizations and Society", "0361-3682", "accounting", "Elsevier"),
         Journal("Review of Accounting Studies", "1380-6653", "accounting", "Springer"),
     ]
-    
+
     # Top Finance Journals
     FINANCE = [
         Journal("Journal of Finance", "0022-1082", "finance", "Wiley"),
@@ -32,8 +32,10 @@ class JournalRegistry:
         Journal("Review of Financial Studies", "0893-9454", "finance", "Oxford"),
         Journal("Journal of Financial and Quantitative Analysis", "0022-1090", "finance", "Cambridge"),
         Journal("Financial Management", "0046-3892", "finance", "Wiley"),
+        Journal("Management Science", "0025-1909", "finance", "INFORMS"),
+        Journal("Journal of Corporate Finance", "0929-1199", "finance", "Elsevier"),
     ]
-    
+
     # Top Economics Journals
     ECONOMICS = [
         Journal("American Economic Review", "0002-8282", "economics", "AEA"),
@@ -45,12 +47,12 @@ class JournalRegistry:
         Journal("Journal of Economic Perspectives", "0895-3309", "economics", "AEA"),
         Journal("Journal of Labor Economics", "0734-306X", "economics", "Chicago"),
     ]
-    
+
     @classmethod
     def get_all_journals(cls) -> List[Journal]:
         """Get all journals across all fields"""
         return cls.ACCOUNTING + cls.FINANCE + cls.ECONOMICS
-    
+
     @classmethod
     def get_by_field(cls, field: str) -> List[Journal]:
         """Get journals by research field"""
@@ -65,12 +67,12 @@ class JournalRegistry:
             return cls.get_all_journals()
         else:
             raise ValueError(f"Unknown field: {field}. Use 'accounting', 'finance', 'economics', or 'all'")
-    
+
     @classmethod
     def get_journal_dict(cls) -> Dict[str, Journal]:
         """Get dictionary of journals by ISSN"""
         return {j.issn: j for j in cls.get_all_journals()}
-    
+
     @classmethod
     def get_issn_list(cls, field: str = 'all') -> List[str]:
         """Get list of ISSNs for a field"""
