@@ -22,6 +22,8 @@ lxml = "^5.0.0"
 pandas = "^2.2.0"
 requests = "^2.32.0"
 crossref-commons = "^0.0.7"
+undetected-chromedriver = "^3.5.5"
+setuptools = "^82.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

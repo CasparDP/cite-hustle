@@ -4,9 +4,7 @@ import os
 import random
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -14,56 +12,37 @@ from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from rapidfuzz import fuzz
 from tqdm import tqdm
-from selenium_stealth import stealth
 
 from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
 
 
-# Chrome-centric fingerprint profiles; align UA, platform, and graphics metadata
-FINGERPRINT_PROFILES = [
+# Session-level randomization profiles for timezone, locale and window size.
+# User-agent is left to undetected-chromedriver so it always matches the real
+# Chrome version – overriding it is a detection signal.
+SESSION_PROFILES = [
     {
-        "name": "mac_chrome_120",
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.216 Safari/537.36",
-        "platform": "MacIntel",
+        "name": "us_east",
         "languages": ["en-US", "en"],
         "timezone": "America/New_York",
-        "vendor": "Google Inc.",
-        "webgl_vendor": "Intel Inc.",
-        "renderer": "Intel Iris OpenGL Engine",
         "window_bounds": (1920, 2560, 1080, 1440),
     },
     {
-        "name": "mac_chrome_121",
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Safari/537.36",
-        "platform": "MacIntel",
+        "name": "us_central",
         "languages": ["en-US", "en"],
         "timezone": "America/Chicago",
-        "vendor": "Google Inc.",
-        "webgl_vendor": "Intel Inc.",
-        "renderer": "Intel UHD Graphics 630",
         "window_bounds": (1680, 2304, 1050, 1440),
     },
     {
-        "name": "windows_chrome_120",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.224 Safari/537.36",
-        "platform": "Win32",
+        "name": "us_west",
         "languages": ["en-US", "en"],
         "timezone": "America/Los_Angeles",
-        "vendor": "Google Inc.",
-        "webgl_vendor": "Google Inc. (Intel)",
-        "renderer": "ANGLE (Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)",
         "window_bounds": (1600, 1920, 900, 1200),
     },
     {
-        "name": "windows_chrome_121",
-        "user_agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.140 Safari/537.36",
-        "platform": "Win32",
+        "name": "us_mountain",
         "languages": ["en-US", "en"],
         "timezone": "America/Denver",
-        "vendor": "Google Inc.",
-        "webgl_vendor": "Google Inc. (NVIDIA)",
-        "renderer": "ANGLE (NVIDIA GeForce RTX 3060 Laptop GPU Direct3D11 vs_5_0 ps_5_0)",
         "window_bounds": (1700, 2048, 960, 1290),
     },
 ]
@@ -103,12 +82,12 @@ class SSRNScraper:
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
 
-        self.driver: Optional[webdriver.Chrome] = None
+        self.driver: Optional[uc.Chrome] = None
         self.cookies_accepted = False
-        self.fingerprint = None
+        self.profile = None
         self._last_navigation = 0.0
 
-    def _get_driver(self) -> webdriver.Chrome:
+    def _get_driver(self) -> uc.Chrome:
         """Return initialized WebDriver or raise if not set."""
         if self.driver is None:
             raise RuntimeError("WebDriver not initialized. Call setup_webdriver() first.")
@@ -138,99 +117,102 @@ class SSRNScraper:
         return absolute_path
 
     def setup_webdriver(self):
-        """Set up Selenium WebDriver with comprehensive anti-detection options"""
-        chrome_options = Options()
+        """Set up undetected-chromedriver with anti-detection options.
 
-        # Select a coherent fingerprint for this session
-        self.fingerprint = random.choice(FINGERPRINT_PROFILES).copy()
-        fingerprint = self.fingerprint
-        user_agent = fingerprint["user_agent"]
+        undetected-chromedriver patches the chromedriver binary to remove
+        the ``cdc_`` markers that Cloudflare scans for, and automatically
+        uses the real Chrome user-agent so there is never a version
+        mismatch between the browser capabilities and the UA string.
+        """
+        chrome_options = uc.ChromeOptions()
+
+        # Select a session profile for timezone / locale / window size
+        self.profile = random.choice(SESSION_PROFILES).copy()
+        profile = self.profile
         self.cookies_accepted = False
         self._last_navigation = 0.0
-
-        if self.headless:
-            chrome_options.add_argument("--headless=new")
 
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"--lang={fingerprint['languages'][0]}")
+        chrome_options.add_argument(f"--lang={profile['languages'][0]}")
 
         # Randomize window size within the profile's envelope
-        min_w, max_w, min_h, max_h = fingerprint["window_bounds"]
+        min_w, max_w, min_h, max_h = profile["window_bounds"]
         width = random.randint(min_w, max_w)
         height = random.randint(min_h, max_h)
         chrome_options.add_argument(f"--window-size={width},{height}")
-        chrome_options.add_argument(f"--user-agent={user_agent}")
 
-        # Critical: Disable automation flags that websites can detect
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        chrome_options.add_experimental_option(
-            "prefs",
-            {"intl.accept_languages": ",".join(fingerprint["languages"])}
+        # NOTE: Do NOT set --user-agent, excludeSwitches, useAutomationExtension,
+        # or --disable-blink-features here – undetected-chromedriver handles all
+        # of that automatically and adding them is itself a detection signal.
+
+        # Detect installed Chrome major version so the matching chromedriver is used
+        chrome_major = self._detect_chrome_major_version()
+
+        # Initialize undetected-chromedriver
+        self.driver = uc.Chrome(
+            options=chrome_options,
+            headless=self.headless,
+            version_main=chrome_major,
         )
+        print(f"  ✓ undetected-chromedriver started (profile: {profile['name']}, chrome v{chrome_major})")
 
-        # Initialize driver
-        self.driver = webdriver.Chrome(options=chrome_options)
-
-        # Apply stealth mode to align navigator/WebGL data with the chosen profile
-        try:
-            stealth(
-                self.driver,
-                languages=fingerprint["languages"],
-                vendor=fingerprint["vendor"],
-                platform=fingerprint["platform"],
-                webgl_vendor=fingerprint["webgl_vendor"],
-                renderer=fingerprint["renderer"],
-                fix_hairline=True,
-            )
-            print(f"  ✓ Stealth mode enabled with profile: {fingerprint['name']}")
-        except Exception as e:
-            print(f"  ℹ️  Could not apply selenium-stealth: {type(e).__name__}: {e}")
-
-        self._apply_fingerprint_overrides()
+        self._apply_session_overrides()
         return self.driver
 
-    def _apply_fingerprint_overrides(self):
-        """Sync CDP overrides with the active fingerprint profile."""
-        if not self.driver or not self.fingerprint:
+    @staticmethod
+    def _detect_chrome_major_version() -> int:
+        """Return the major version of the locally installed Chrome/Chromium."""
+        import subprocess, re
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium-browser",
+            "chromium",
+        ]
+        for path in candidates:
+            try:
+                out = subprocess.check_output(
+                    [path, "--version"], stderr=subprocess.DEVNULL, text=True
+                )
+                m = re.search(r"(\d+)\.", out)
+                if m:
+                    return int(m.group(1))
+            except Exception:
+                continue
+        # Fallback: let uc figure it out (may grab latest)
+        print("  ⚠️  Could not detect Chrome version; letting uc pick automatically")
+        return None
+
+    def _apply_session_overrides(self):
+        """Apply timezone and locale CDP overrides for the active session profile.
+
+        User-agent and navigator.webdriver are handled by
+        undetected-chromedriver – overriding them here would create
+        detectable inconsistencies.
+        """
+        if not self.driver or not self.profile:
             return
-        fingerprint = self.fingerprint
-        languages = fingerprint.get("languages", ["en-US", "en"])
+        profile = self.profile
+        languages = profile.get("languages", ["en-US", "en"])
         primary_locale = languages[0]
         try:
             self.driver.execute_cdp_cmd(
-                "Network.setUserAgentOverride",
-                {
-                    "userAgent": fingerprint["user_agent"],
-                    "acceptLanguage": ",".join(languages),
-                    "platform": fingerprint["platform"],
-                },
-            )
-            self.driver.execute_cdp_cmd(
                 "Emulation.setTimezoneOverride",
-                {"timezoneId": fingerprint.get("timezone", "America/New_York")},
+                {"timezoneId": profile.get("timezone", "America/New_York")},
             )
             self.driver.execute_cdp_cmd(
                 "Emulation.setLocaleOverride",
                 {"locale": primary_locale},
             )
         except Exception as e:
-            print(f"  ℹ️  Could not apply CDP fingerprint overrides: {type(e).__name__}: {e}")
+            print(f"  ℹ️  Could not apply CDP overrides: {type(e).__name__}: {e}")
         try:
-            self.driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
             self.driver.execute_script(
                 "Object.defineProperty(navigator, 'languages', {get: () => arguments[0]});",
                 languages,
-            )
-            self.driver.execute_script(
-                "Object.defineProperty(navigator, 'platform', {get: () => arguments[0]});",
-                fingerprint.get("platform", "Win32"),
             )
             self.driver.execute_script(
                 "Object.defineProperty(navigator, 'language', {get: () => arguments[0]});",
@@ -277,7 +259,7 @@ class SSRNScraper:
         if wait_for > 0:
             time.sleep(wait_for)
 
-    def _load_url(self, url: str) -> webdriver.Chrome:
+    def _load_url(self, url: str) -> uc.Chrome:
         """Navigate to a URL while honoring crawl delay and human pacing."""
         drv = self._get_driver()
         self._respect_crawl_delay()
