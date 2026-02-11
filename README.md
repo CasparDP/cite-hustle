@@ -5,17 +5,18 @@ Academic literature research tool for automated collection of papers from top jo
 ## Overview
 
 Cite-Hustle automates the workflow of collecting academic papers:
+
 1. **Collect** article metadata from CrossRef API ✅
-2. **Scrape** SSRN pages to find abstracts and PDF links ✅  
+2. **Scrape** SSRN pages to find abstracts and PDF links ✅
 3. **Download** PDFs for offline reading ✅
 
 ## Setup
 
 ### Prerequisites
+
 - Python 3.12+
 - Poetry for dependency management
-- Chrome browser (for Selenium scraping)
-- BeautifulSoup4 (for HTML parsing)
+- Chrome browser (undetected-chromedriver manages chromedriver automatically)
 
 ### Installation
 
@@ -25,9 +26,6 @@ cd ~/Github/cite-hustle
 
 # Install dependencies with Poetry
 poetry install
-
-# Install BeautifulSoup4 for abstract extraction
-poetry add beautifulsoup4
 
 # Activate the virtual environment (optional - Poetry handles this automatically)
 poetry shell
@@ -60,8 +58,8 @@ poetry run cite-hustle init
 # 1. Collect article metadata from CrossRef
 poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2024
 
-# 2. Scrape SSRN for abstracts
-poetry run cite-hustle scrape --limit 50
+# 2. Scrape SSRN for abstracts (use higher delay to avoid Cloudflare)
+poetry run cite-hustle scrape --limit 50 --delay 70
 
 # 3. Check progress
 poetry run cite-hustle status
@@ -69,8 +67,8 @@ poetry run cite-hustle status
 # 4. Search articles
 poetry run cite-hustle search "earnings management"
 
-# 5. Download PDFs (when PDF URLs are available)
-poetry run cite-hustle download --limit 20
+# 5. Download PDFs (use --use-selenium to bypass Cloudflare)
+poetry run cite-hustle download --use-selenium --limit 20
 ```
 
 ### Check Status
@@ -98,28 +96,35 @@ poetry run cite-hustle collect --field accounting --year-start 2020 --year-end 2
 
 # Collect all fields for 2023
 poetry run cite-hustle collect --field all --year-start 2023 --year-end 2023
+
+# Force re-fetch (clears cache for specified years)
+poetry run cite-hustle collect --field all --year-start 2024 --year-end 2025 --force
 ```
 
 ### Scrape SSRN
 
 ```bash
-# Scrape 50 articles with default settings
-poetry run cite-hustle scrape --limit 50
+# Scrape 50 articles with conservative delay
+poetry run cite-hustle scrape --limit 50 --delay 70
 
 # Scrape with custom settings
-poetry run cite-hustle scrape --delay 15 --threshold 90
+poetry run cite-hustle scrape --delay 90 --threshold 90
 
 # Show browser for debugging
-poetry run cite-hustle scrape --no-headless --limit 5
+poetry run cite-hustle scrape --no-headless --limit 5 --delay 70
+
+# Unattended VM run
+poetry run cite-hustle scrape --delay 90 --limit 500
 ```
 
 ### Download PDFs
 
-**⚠️ Important:** As of October 2025, SSRN uses Cloudflare protection that blocks direct HTTP downloads. **Use the `--use-selenium` flag for reliable PDF downloads.**
+**⚠️ Important:** SSRN uses Cloudflare protection that blocks direct HTTP downloads. **Use the `--use-selenium` flag for reliable PDF downloads.**
 
 The Selenium downloader uses:
-- **selenium-stealth** to avoid bot detection
-- **Automatic Cloudflare challenge handling** to click "Verify you are human" checkboxes
+
+- **undetected-chromedriver** to bypass bot detection (patches chromedriver binary, matches real Chrome UA)
+- **Automatic Cloudflare challenge handling**
 - Browser automation to download PDFs naturally
 
 ```bash
@@ -129,18 +134,19 @@ poetry run cite-hustle download --use-selenium --limit 20
 # Show browser for debugging (non-headless)
 poetry run cite-hustle download --use-selenium --no-headless --limit 5
 
-# Adjust delay between downloads (be respectful!)
+# Adjust delay between downloads
 poetry run cite-hustle download --use-selenium --delay 5 --limit 50
 
 # Download all pending PDFs
 poetry run cite-hustle download --use-selenium
 ```
 
-**How it works:** 
+**How it works:**
+
 1. **Selenium method (recommended):** Uses Chrome browser automation to navigate to SSRN pages, find download buttons, and download PDFs - bypassing Cloudflare protection
 2. **HTTP method (legacy):** Constructs PDF URLs from SSRN paper URLs but usually blocked by Cloudflare
 
-📖 **For detailed documentation on the Selenium downloader, see [SELENIUM_PDF_DOWNLOADER.md](./SELENIUM_PDF_DOWNLOADER.md)**
+📖 **For a complete CLI reference, see [CLI-CHEATSHEET.md](./CLI-CHEATSHEET.md)**
 
 ### Extract Abstracts from Saved HTML
 
@@ -192,25 +198,25 @@ poetry run cite-hustle --help
 cite-hustle/
 ├── src/cite_hustle/
 │   ├── __init__.py
-│   ├── config.py              # Configuration management
+│   ├── config.py                    # Configuration management
 │   ├── cli/
-│   │   └── commands.py        # CLI commands
+│   │   └── commands.py              # CLI commands
 │   ├── database/
-│   │   ├── models.py          # Database schema & connection
-│   │   └── repository.py      # Data access layer
+│   │   ├── models.py                # Database schema & connection
+│   │   └── repository.py            # Data access layer
 │   └── collectors/
-│       ├── journals.py        # Journal registry (19 journals)
-│       ├── metadata.py        # CrossRef collector ✅
-│       ├── ssrn_scraper.py    # SSRN scraper ✅
-│       └── pdf_downloader.py  # PDF downloader ✅
-├── get_meta_articles.py       # Legacy script (reference)
-├── get_pdf_links.py           # Legacy script (reference)
+│       ├── journals.py              # Journal registry (19 journals)
+│       ├── metadata.py              # CrossRef collector
+│       ├── ssrn_scraper.py          # SSRN scraper (undetected-chromedriver)
+│       ├── selenium_pdf_downloader.py  # PDF downloader (undetected-chromedriver)
+│       └── pdf_downloader.py        # Legacy HTTP PDF downloader
+├── scripts/                         # Utility scripts
+├── extract_abstracts_from_html.py   # Re-extract abstracts from saved HTML
 ├── pyproject.toml
 ├── poetry.lock
 ├── .env.example
 ├── README.md
-├── METADATA_MIGRATION.md      # Migration guide
-└── SSRN_MIGRATION.md          # Migration guide
+└── CLI-CHEATSHEET.md                # Complete CLI reference
 ```
 
 ## Data Storage
@@ -229,18 +235,23 @@ All data is stored in Dropbox for easy syncing across machines:
 ## Features
 
 ### ✅ Metadata Collection
+
 - Fetches from CrossRef API for 19 top journals
 - Automatic caching to reduce API calls
 - Retry logic with exponential backoff
 - Progress tracking with tqdm
 - Automatic FTS index rebuilding
 
-### ✅ SSRN Scraping  
+### ✅ SSRN Scraping
+
+- **undetected-chromedriver** bypasses Cloudflare by patching chromedriver binary
+- Auto-matches real Chrome version (no stale user-agent strings)
 - **Direct URL extraction** - Extracts URLs from search results (2 requests vs 4+)
 - **Combined similarity scoring** - Fuzzy match (70%) + length similarity (30%)
 - **Multi-strategy abstract extraction** - 4 different extraction methods for different HTML structures
 - **Search box verification** - Ensures text is entered before clicking search
 - **Standalone abstract extractor** - Re-extract abstracts from saved HTML files
+- Variable crawl delay with human-like jitter and random "distraction" pauses
 - Configurable similarity threshold and weight parameters
 - Automatic cookie handling
 - HTML storage for later analysis
@@ -250,14 +261,16 @@ All data is stored in Dropbox for easy syncing across machines:
 - Resumable after interruption
 
 ### ✅ Full-Text Search
+
 - DuckDB FTS extension with BM25 ranking
 - Search titles and abstracts
 - Relevance scoring
 - Fast query performance
 
 ### ✅ PDF Download
-- **✨ Selenium browser automation with stealth mode** - Uses selenium-stealth to avoid detection
-- **✨ Automatic Cloudflare challenge handling** - Clicks "Verify you are human" checkboxes automatically
+
+- **undetected-chromedriver** bypasses Cloudflare protection (replaces selenium-stealth)
+- **Automatic Cloudflare challenge handling**
 - **Smart download strategies** - Multiple methods to find download buttons on SSRN pages
 - **Automatic cookie handling** - Accepts SSRN cookie banners automatically
 - **Download monitoring** - Waits for PDF files to complete downloading
@@ -283,6 +296,7 @@ All data is stored in Dropbox for easy syncing across machines:
 ### Full-Text Search
 
 DuckDB FTS extension provides fast full-text search on:
+
 - Article titles (fts_main_articles)
 - Abstracts (fts_main_ssrn_pages)
 
@@ -340,49 +354,41 @@ stats = repo.get_statistics()
 
 ## Migration Status
 
-✅ **Metadata Collection** - Complete  
-✅ **SSRN Scraping** - Complete  
-✅ **PDF Download** - Complete and functional  
-⏳ **Web GUI** - Future enhancement  
+✅ **Metadata Collection** - Complete
+✅ **SSRN Scraping** - Complete
+✅ **PDF Download** - Complete and functional
+⏳ **Web GUI** - Future enhancement
 
-See `METADATA_MIGRATION.md` and `SSRN_MIGRATION.md` for detailed migration notes.
+See `METADATA_MIGRATION.md` and `SSRN_MIGRATION.md` (if present) for detailed migration notes.
 
 ## Troubleshooting
 
 ### Search not working
+
 ```bash
 poetry run cite-hustle rebuild-fts
 ```
 
-### ChromeDriver not found
+### ChromeDriver version mismatch
+
+undetected-chromedriver auto-detects your Chrome version. If you get a version error, update Chrome:
+
 ```bash
-brew install --cask chromedriver
+# macOS
+brew upgrade --cask google-chrome
 ```
 
 ### No articles in database
+
 ```bash
 poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2023
 ```
 
 ### Want to see browser (debugging)
-```bash
-poetry run cite-hustle scrape --no-headless --limit 5
-```
-
-## Testing
-
-### Test PDF Downloader
 
 ```bash
-# Run test script to check PDF downloader functionality
-poetry run python test_pdf_downloader.py
+poetry run cite-hustle scrape --no-headless --limit 5 --delay 70
 ```
-
-This will:
-- Check if database exists and show statistics
-- Display pending PDF downloads
-- Test PDF downloader initialization
-- Provide guidance on next steps
 
 ## Future Enhancements
 
