@@ -16,7 +16,7 @@ Cite-Hustle automates the workflow of collecting academic papers:
 
 - Python 3.12+
 - Poetry for dependency management
-- Chrome browser (undetected-chromedriver manages chromedriver automatically)
+- Chrome browser (required for Selenium-based scraping/downloading)
 
 ### Installation
 
@@ -34,10 +34,7 @@ poetry shell
 ### Configuration
 
 ```bash
-# Copy example environment file
-cp .env.example .env
-
-# Edit .env with your settings
+# Create a .env file with your settings
 # Especially set CITE_HUSTLE_CROSSREF_EMAIL=your.email@example.com
 ```
 
@@ -117,14 +114,35 @@ poetry run cite-hustle scrape --no-headless --limit 5 --delay 70
 poetry run cite-hustle scrape --delay 90 --limit 500
 ```
 
+### Enrich Abstracts (OpenAlex)
+
+Use this after SSRN scraping to fill in missing abstracts by DOI.
+
+```bash
+# Enrich missing abstracts using OpenAlex
+poetry run cite-hustle enrich-openalex --limit 200
+
+# Restrict to a year range and control concurrency
+poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
+
+# Add a delay between requests for gentler pacing
+poetry run cite-hustle enrich-openalex --limit 200 --delay 0.5
+
+# Force overwrite existing abstracts
+poetry run cite-hustle enrich-openalex --force
+
+# Print the most recent enriched abstracts
+poetry run cite-hustle enrich-openalex --limit 50 --print-abstracts 5
+```
+
 ### Download PDFs
 
 **⚠️ Important:** SSRN uses Cloudflare protection that blocks direct HTTP downloads. **Use the `--use-selenium` flag for reliable PDF downloads.**
 
 The Selenium downloader uses:
 
-- **undetected-chromedriver** to bypass bot detection (patches chromedriver binary, matches real Chrome UA)
-- **Automatic Cloudflare challenge handling**
+- Browser automation to improve reliability against bot protection
+- Automatic cookie/challenge handling where possible
 - Browser automation to download PDFs naturally
 
 ```bash
@@ -182,6 +200,9 @@ poetry run cite-hustle search "financial reporting" --limit 50
 ### Other Commands
 
 ```bash
+# Show dashboard overview
+poetry run cite-hustle dashboard
+
 # Show sample articles
 poetry run cite-hustle sample --limit 10
 
@@ -207,14 +228,13 @@ cite-hustle/
 │   └── collectors/
 │       ├── journals.py              # Journal registry (19 journals)
 │       ├── metadata.py              # CrossRef collector
-│       ├── ssrn_scraper.py          # SSRN scraper (undetected-chromedriver)
-│       ├── selenium_pdf_downloader.py  # PDF downloader (undetected-chromedriver)
+│       ├── ssrn_scraper.py          # SSRN scraper
+│       ├── selenium_pdf_downloader.py  # Selenium PDF downloader
 │       └── pdf_downloader.py        # Legacy HTTP PDF downloader
 ├── scripts/                         # Utility scripts
 ├── extract_abstracts_from_html.py   # Re-extract abstracts from saved HTML
 ├── pyproject.toml
 ├── poetry.lock
-├── .env.example
 ├── README.md
 └── CLI-CHEATSHEET.md                # Complete CLI reference
 ```
@@ -244,8 +264,8 @@ All data is stored in Dropbox for easy syncing across machines:
 
 ### ✅ SSRN Scraping
 
-- **undetected-chromedriver** bypasses Cloudflare by patching chromedriver binary
-- Auto-matches real Chrome version (no stale user-agent strings)
+- Selenium-based browser automation helps handle bot-protected pages
+- Configurable headless/non-headless execution for reliability and debugging
 - **Direct URL extraction** - Extracts URLs from search results (2 requests vs 4+)
 - **Combined similarity scoring** - Fuzzy match (70%) + length similarity (30%)
 - **Multi-strategy abstract extraction** - 4 different extraction methods for different HTML structures
@@ -269,8 +289,8 @@ All data is stored in Dropbox for easy syncing across machines:
 
 ### ✅ PDF Download
 
-- **undetected-chromedriver** bypasses Cloudflare protection (replaces selenium-stealth)
-- **Automatic Cloudflare challenge handling**
+- Selenium-based browser automation for bot-protected SSRN downloads
+- Automatic cookie/challenge handling where possible
 - **Smart download strategies** - Multiple methods to find download buttons on SSRN pages
 - **Automatic cookie handling** - Accepts SSRN cookie banners automatically
 - **Download monitoring** - Waits for PDF files to complete downloading
@@ -371,7 +391,7 @@ poetry run cite-hustle rebuild-fts
 
 ### ChromeDriver version mismatch
 
-undetected-chromedriver auto-detects your Chrome version. If you get a version error, update Chrome:
+If you get a Chrome/driver compatibility error, update Chrome and your Python dependencies:
 
 ```bash
 # macOS

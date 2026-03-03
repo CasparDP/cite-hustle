@@ -137,12 +137,14 @@ Results are scored using combined similarity:
 Accept match if score ≥ threshold (default 85). See `SSRNScraper._calculate_combined_similarity`.
 
 ### Anti-Detection (Selenium)
-Both scraper and downloader use:
-- `selenium-stealth` to avoid bot detection
-- User-agent rotation from pool of 8 realistic browser fingerprints
-- Randomized window dimensions (1920-2560 x 1080-1440)
-- CDP commands to disable automation flags (`AutomationControlled`, `navigator.webdriver`)
+The scraping/downloading stack currently uses a mixed Selenium approach:
+- Selenium browser automation as the base
+- `selenium-stealth` hardening where configured
+- `undetected-chromedriver` support in the dependency stack
+- Randomized browser behavior/fingerprints and automation-flag hardening where implemented
 - Automatic cookie acceptance and Cloudflare challenge handling
+
+Implementation details may differ between `ssrn_scraper.py` and `selenium_pdf_downloader.py`, so prefer code-level verification when changing anti-detection behavior.
 
 ### HTML Storage Pattern
 ```python
@@ -162,7 +164,7 @@ repo.insert_ssrn_page(doi, ssrn_url, html_content=None, html_file_path=html_path
 | `click` | CLI framework |
 | `duckdb` | Database with FTS extension |
 | `pydantic-settings` | Configuration management |
-| `selenium` + `selenium-stealth` | Browser automation for scraping |
+| `selenium` + `selenium-stealth` + `undetected-chromedriver` | Browser automation and anti-detection support for scraping/downloading |
 | `rapidfuzz` | Fuzzy string matching for SSRN results |
 | `crossref-commons` | CrossRef API client |
 | `beautifulsoup4` + `lxml` | HTML parsing |

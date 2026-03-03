@@ -1,11 +1,13 @@
 """Command-line interface for cite-hustle"""
 
+import asyncio
 from pathlib import Path
 
 import click
 
 from cite_hustle.collectors.journals import JournalRegistry
 from cite_hustle.collectors.metadata import MetadataCollector
+from cite_hustle.collectors.openalex_enricher import OpenAlexEnricher
 
 # TOFIXME: Temporarily disable due to Cloudflare issues
 # from cite_hustle.collectors.pdf_downloader import PDFDownloader
@@ -257,6 +259,94 @@ def scrape(ctx, limit, delay, threshold, headless):
         traceback.print_exc()
 
 
+@main.command(name="enrich-openalex")
+@click.option("--limit", default=None, type=int, help="Limit number of articles to enrich")
+@click.option("--year-start", default=None, type=int, help="Start year filter")
+@click.option("--year-end", default=None, type=int, help="End year filter")
+@click.option("--concurrency", default=8, type=int, help="Concurrent OpenAlex requests")
+@click.option("--delay", default=0.0, type=float, help="Delay between OpenAlex requests (seconds)")
+@click.option("--force", is_flag=True, help="Overwrite existing abstracts")
+@click.option(
+    "--print-abstracts", default=0, type=int, help="Print the most recent enriched abstracts"
+)
+@click.option(
+    "--skip-fts-rebuild", is_flag=True, help="Skip rebuilding FTS indexes after enrichment"
+)
+@click.pass_context
+def enrich_openalex(
+    ctx,
+    limit,
+    year_start,
+    year_end,
+    concurrency,
+    delay,
+    force,
+    print_abstracts,
+    skip_fts_rebuild,
+):
+    """
+    Enrich missing abstracts using OpenAlex.
+
+    Examples:
+        cite-hustle enrich-openalex --limit 200
+        cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
+        cite-hustle enrich-openalex --force --skip-fts-rebuild
+    """
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+
+    pending = repo.get_articles_missing_abstract(
+        limit=limit, year_start=year_start, year_end=year_end
+    )
+
+    if pending.empty:
+        click.echo("✓ No articles missing abstracts")
+        return
+
+    click.echo(f"\n{'=' * 60}")
+    click.echo("📚 ENRICHING ABSTRACTS (OPENALEX)")
+    click.echo(f"{'=' * 60}")
+    click.echo(f"Candidates: {len(pending)}")
+    click.echo(f"Concurrency: {concurrency}")
+    click.echo(f"Delay: {delay} seconds")
+    click.echo(f"Force overwrite: {'Yes' if force else 'No'}")
+    click.echo(f"{'=' * 60}\n")
+
+    enricher = OpenAlexEnricher(repo, concurrency=concurrency, delay_s=delay)
+    stats = asyncio.run(enricher.enrich_missing_abstracts(pending.to_dict("records"), force=force))
+
+    click.echo(f"\n{'=' * 60}")
+    click.echo("✓ ENRICHMENT COMPLETE")
+    click.echo(f"{'=' * 60}")
+    click.echo(f"Total candidates: {stats['total']}")
+    click.echo(f"✓ Updated: {stats['updated']}")
+    click.echo(f"⚠️  Not found: {stats['not_found']}")
+    click.echo(f"⚠️  Empty abstracts: {stats['empty_abstract']}")
+    click.echo(f"⚠️  Invalid DOIs: {stats['invalid_doi']}")
+    click.echo(f"✗ Failed: {stats['failed']}")
+
+    if print_abstracts and stats["updated"] > 0:
+        abstracts = repo.get_recent_openalex_abstracts(limit=print_abstracts)
+        if abstracts:
+            click.echo("\nRecent OpenAlex abstracts:\n")
+            for idx, row in enumerate(abstracts, 1):
+                click.echo(f"{idx}. DOI: {row['doi']}")
+                click.echo(f"   Title: {row['title']}")
+                click.echo(f"   Abstract: {row['abstract']}\n")
+
+    if stats["updated"] > 0 and not skip_fts_rebuild:
+        click.echo("\nRebuilding FTS indexes...")
+        try:
+            db.create_fts_indexes()
+            click.echo("✓ Search indexes updated successfully!")
+        except Exception as e:
+            click.echo(f"⚠️  Warning: Failed to rebuild FTS indexes: {e}")
+            click.echo("   You can rebuild manually with:")
+            click.echo("   poetry run cite-hustle rebuild-fts")
+
+    click.echo(f"\n{'=' * 60}\n")
+
+
 @main.command()
 @click.option("--limit", default=None, type=int, help="Limit number of PDFs to download")
 @click.option("--delay", default=2, type=int, help="Delay between downloads (seconds)")
@@ -373,6 +463,69 @@ def download(ctx, limit, delay, use_selenium, headless):
             repo.log_processing(result["doi"], "download_pdf", "failed", error_message)
 
     click.echo(f"\n✓ Download process complete")
+
+
+@main.command()
+@click.option("--top-journals", default=10, type=int, help="Number of top journals to show")
+@click.option("--recent", default=10, type=int, help="Recent processing entries to show")
+@click.option("--missing-by-journal", default=0, type=int, help="Show missing-abstracts bar chart")
+@click.option("--bar-width", default=30, type=int, help="Width of missing-abstracts bars")
+@click.pass_context
+def dashboard(ctx, top_journals, recent, missing_by_journal, bar_width):
+    """Show a dashboard-style overview of database contents."""
+    repo = ctx.obj["repo"]
+    stats = repo.get_statistics()
+    missing_abstracts = repo.get_missing_abstract_count()
+    openalex_enriched = repo.get_openalex_enriched_count()
+    top = repo.get_top_journals(limit=top_journals)
+    recent_rows = repo.get_recent_processing(limit=recent)
+    missing_chart = None
+    if missing_by_journal:
+        missing_chart = repo.get_missing_abstracts_by_journal(limit=missing_by_journal)
+
+    click.echo("\n" + "=" * 60)
+    click.echo("📊 CITE-HUSTLE DASHBOARD")
+    click.echo("=" * 60)
+
+    click.echo(f"\n📚 Articles: {stats['total_articles']:,}")
+    click.echo(f"🌐 SSRN abstracts: {stats['ssrn_scraped']:,}")
+    click.echo(f"🧩 Missing abstracts: {missing_abstracts:,}")
+    click.echo(f"🧠 OpenAlex enriched: {openalex_enriched:,}")
+    click.echo(f"📄 PDFs downloaded: {stats['pdfs_downloaded']:,}")
+
+    if stats["pending_ssrn_scrapes"] > 0:
+        click.echo(f"\n⏳ Pending SSRN scrapes: {stats['pending_ssrn_scrapes']:,}")
+    if stats["pending_pdf_downloads"] > 0:
+        click.echo(f"⏳ Pending PDF downloads: {stats['pending_pdf_downloads']:,}")
+
+    if top:
+        click.echo("\n🏷️  Top journals:")
+        for row in top:
+            click.echo(f"  • {row['journal_name']}: {row['count']:,}")
+
+    if missing_chart:
+        click.echo("\n🧱 Missing abstracts by journal:")
+        max_count = max(row["missing_count"] for row in missing_chart) if missing_chart else 0
+        for row in missing_chart:
+            journal = row["journal_name"]
+            missing_count = row["missing_count"]
+            total_count = row.get("total_count") or 0
+            missing_pct = row.get("missing_pct") or 0.0
+            bar_len = int((missing_count / max_count) * bar_width) if max_count else 0
+            bar = "█" * bar_len
+            click.echo(
+                f"  • {journal}: {missing_count:,}/{total_count:,} ({missing_pct:.1%}) {bar}"
+            )
+
+    if recent_rows:
+        click.echo("\n🕒 Recent processing:")
+        for row in recent_rows:
+            error = f" | {row['error_message']}" if row["error_message"] else ""
+            click.echo(
+                f"  • {row['processed_at']} | {row['stage']} | {row['status']} | {row['doi']}{error}"
+            )
+
+    click.echo("\n" + "=" * 60 + "\n")
 
 
 @main.command()

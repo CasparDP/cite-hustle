@@ -27,11 +27,11 @@ cite-hustle init
 **What it does:**
 
 - Creates DuckDB database at configured path
-- Initializes all tables (journals, articles, ssrn_pages, processing_log)
+- Initializes all tables (`journals`, `articles`, `ssrn_pages`, `processing_log`)
 - Sets up full-text search indexes
 - Creates required data directories
 
-**When to use:** First time setup or after database corruption
+**When to use:** First-time setup or after database issues
 
 ---
 
@@ -56,6 +56,24 @@ cite-hustle status
 
 ---
 
+### `dashboard`
+
+Show a dashboard-style overview of database contents.
+
+```bash
+cite-hustle dashboard
+cite-hustle dashboard --top-journals 5 --recent 5
+```
+
+**Options:**
+
+- `--top-journals <n>` - Number of top journals to show
+- `--recent <n>` - Recent processing entries to show
+
+**When to use:** Quick snapshot of coverage, gaps, and recent activity
+
+---
+
 ### `journals`
 
 List journals in the registry by research field.
@@ -71,9 +89,9 @@ cite-hustle journals [OPTIONS]
 **Examples:**
 
 ```bash
-cite-hustle journals                          # List all journals
-cite-hustle journals --field accounting       # List only accounting journals
-cite-hustle journals --field finance          # List only finance journals
+cite-hustle journals
+cite-hustle journals --field accounting
+cite-hustle journals --field finance
 ```
 
 **When to use:** See which journals are supported before collecting metadata
@@ -92,7 +110,7 @@ cite-hustle collect [OPTIONS]
 
 **Options:**
 
-- `--field <field>` - Field to collect: `accounting`, `finance`, `economics`, or `all` (default: `all`)
+- `--field <field>` - `accounting`, `finance`, `economics`, or `all` (default: `all`)
 - `--year-start <year>` - Start year (default: `2004`)
 - `--year-end <year>` - End year (default: `2025`)
 - `--parallel` / `--sequential` - Enable parallel processing (default: sequential)
@@ -105,7 +123,7 @@ cite-hustle collect [OPTIONS]
 cite-hustle collect --field accounting --year-start 2020 --year-end 2024
 cite-hustle collect --field all --year-start 2023
 cite-hustle collect --field finance --year-start 2020 --parallel
-cite-hustle collect --field all --year-start 2024 --year-end 2025 --force  # Re-fetch
+cite-hustle collect --field all --year-start 2024 --year-end 2025 --force
 ```
 
 **What it does:**
@@ -113,16 +131,16 @@ cite-hustle collect --field all --year-start 2024 --year-end 2025 --force  # Re-
 - Fetches article metadata (title, authors, DOI, year) from CrossRef
 - Caches API responses to avoid re-fetching
 - Saves articles to database
-- Automatically rebuilds FTS indexes (unless `--skip-fts-rebuild` used)
-- Provides summary of articles collected per journal
+- Rebuilds FTS indexes automatically (unless `--skip-fts-rebuild` is used)
+- Prints collection summary by journal
 
-**When to use:** First step - get article metadata before scraping/downloading
+**When to use:** First step in the workflow
 
 ---
 
 ### 2. `scrape`
 
-Scrape SSRN for article pages, abstracts, and PDF links.
+Scrape SSRN for article pages and abstracts.
 
 ```bash
 cite-hustle scrape [OPTIONS]
@@ -138,34 +156,53 @@ cite-hustle scrape [OPTIONS]
 **Examples:**
 
 ```bash
-cite-hustle scrape --limit 10                       # Scrape 10 articles
-cite-hustle scrape --delay 70 --no-headless         # Conservative delay, visible browser
-cite-hustle scrape --delay 90 --limit 500           # Unattended VM run
-cite-hustle scrape --delay 3 --threshold 90         # Fast crawl, stricter matching
-cite-hustle scrape --no-headless                    # Show browser (debugging)
-cite-hustle scrape                                  # Scrape all pending articles
+cite-hustle scrape --limit 10
+cite-hustle scrape --delay 70 --no-headless
+cite-hustle scrape --delay 90 --limit 500
+cite-hustle scrape --delay 3 --threshold 90
+cite-hustle scrape --no-headless
+cite-hustle scrape
 ```
 
 **What it does:**
 
-- Searches SSRN for each article using title/author
-- Uses fuzzy matching to find correct paper
-- Extracts abstract, PDF URL, and SSRN metadata
-- Saves HTML content to disk
-- Updates database with scraping results
-- Logs successes, failures, and no-matches
+- Searches SSRN for each pending article
+- Uses similarity matching to identify best results
+- Extracts abstract and SSRN page metadata
+- Saves SSRN HTML to disk
+- Updates database with scrape status and errors
 
-**When to use:** After collecting metadata, before downloading PDFs
-
-**Rate limiting:** The `--delay` value is the base between navigations. Actual waits are
-randomized (0.5×–1.5× base) with a 12% chance of a longer "distraction" pause (30–120s).
-Each article requires ~2 navigations, so effective per-article time is roughly 2× the base delay.
-
-**Recommended delays:** `--delay 70` (moderate), `--delay 90` (conservative/unattended), `--delay 120` (very safe)
+**When to use:** After `collect`, before `download`
 
 ---
 
-### 3. `download`
+### 3. `enrich-openalex`
+
+Enrich missing abstracts using OpenAlex.
+
+```bash
+cite-hustle enrich-openalex --limit 200
+cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8 --delay 0.5
+cite-hustle enrich-openalex --force
+cite-hustle enrich-openalex --limit 50 --print-abstracts 5
+```
+
+**Options:**
+
+- `--limit <n>` - Limit number of articles to enrich (default: all missing)
+- `--year-start <year>` - Start year filter (optional)
+- `--year-end <year>` - End year filter (optional)
+- `--concurrency <n>` - Concurrent OpenAlex requests (default: `8`)
+- `--delay <seconds>` - Delay between OpenAlex requests (default: `0`)
+- `--force` - Overwrite existing abstracts
+- `--print-abstracts <n>` - Print the most recent enriched abstracts
+- `--skip-fts-rebuild` - Skip rebuilding search indexes after enrichment
+
+**When to use:** After `scrape`, before `download` to fill missing abstracts.
+
+---
+
+### 4. `download`
 
 Download PDFs from SSRN for scraped articles.
 
@@ -177,37 +214,37 @@ cite-hustle download [OPTIONS]
 
 - `--limit <n>` - Limit number of PDFs to download (default: all pending)
 - `--delay <seconds>` - Delay between downloads (default: `2`)
-- `--use-selenium` - Use Selenium browser automation to bypass Cloudflare (recommended)
-- `--headless` / `--no-headless` - Run browser in headless mode (default: headless, Selenium only)
+- `--use-selenium` - Use browser automation (recommended for SSRN/Cloudflare)
+- `--headless` / `--no-headless` - Run browser in headless mode (default: headless, Selenium path only)
 
 **Examples:**
 
 ```bash
-cite-hustle download --use-selenium --limit 50          # Recommended: Selenium bypass
-cite-hustle download --use-selenium --no-headless       # Visible browser (debugging)
-cite-hustle download --use-selenium --delay 5           # Adjust delay
-cite-hustle download --limit 50                         # HTTP-only (usually blocked)
+cite-hustle download --use-selenium --limit 50
+cite-hustle download --use-selenium --no-headless
+cite-hustle download --use-selenium --delay 5
+cite-hustle download --limit 50
 ```
 
 **What it does:**
 
-- Downloads PDFs from SSRN URLs found during scraping
-- Uses `undetected-chromedriver` to bypass Cloudflare protection (with `--use-selenium`)
+- Downloads PDFs for articles with SSRN pages
+- Uses browser automation when `--use-selenium` is enabled
 - Saves PDFs to configured directory
-- Updates database with download status
+- Updates database download status
 - Logs successful/failed downloads
 
-**When to use:** After scraping to get full paper PDFs
+**When to use:** After `scrape` when you want local PDFs
 
-**Note:** Direct HTTP downloads are usually blocked by Cloudflare. Use `--use-selenium` for reliable downloads.
+**Note:** Direct HTTP downloads are often blocked by bot protection. Prefer `--use-selenium`.
 
 ---
 
-## Search & Analysis
+## Search & Inspection
 
 ### `search`
 
-Full-text search articles by title or author.
+Search articles by title or author.
 
 ```bash
 cite-hustle search <query> [OPTIONS]
@@ -222,25 +259,23 @@ cite-hustle search <query> [OPTIONS]
 **Examples:**
 
 ```bash
-cite-hustle search "earnings management"           # Search titles
+cite-hustle search "earnings management"
 cite-hustle search "earnings management" --limit 50
-cite-hustle search "Smith" --author                # Search authors
+cite-hustle search "Smith" --author
 cite-hustle search "accounting fraud"
 ```
 
 **What it does:**
 
-- Uses BM25 full-text search on article titles and abstracts
-- Returns ranked results by relevance score
-- Shows article details (title, authors, journal, year, DOI)
-
-**When to use:** Find specific papers or topics in your database
+- Uses FTS-backed ranking for title search
+- Supports author-name search
+- Returns result details (title, authors, journal, year, DOI, relevance where available)
 
 ---
 
 ### `sample`
 
-Show a sample of recent articles from the database.
+Show a sample of recent articles in the database.
 
 ```bash
 cite-hustle sample [OPTIONS]
@@ -253,16 +288,9 @@ cite-hustle sample [OPTIONS]
 **Examples:**
 
 ```bash
-cite-hustle sample                    # Show 10 recent articles
-cite-hustle sample --limit 20         # Show 20 recent articles
+cite-hustle sample
+cite-hustle sample --limit 20
 ```
-
-**What it does:**
-
-- Displays most recently added articles
-- Shows title, authors, journal, year, and DOI
-
-**When to use:** Quick check of what's in the database
 
 ---
 
@@ -276,107 +304,97 @@ cite-hustle rebuild-fts
 
 **What it does:**
 
-- Drops and recreates FTS indexes
-- Re-indexes all articles and abstracts
-- Tests search functionality after rebuild
+- Recreates FTS indexes
+- Re-indexes current database content
+- Runs a small sanity-check search
 
 **When to use:**
 
-- Search not returning expected results
-- After manual database modifications
-- After collecting articles with `--skip-fts-rebuild` flag
+- Search results look stale or empty
+- After manual DB edits
+- After `collect --skip-fts-rebuild`
 
 ---
 
 ## Complete Workflow Example
 
 ```bash
-# 1. Setup (first time only)
+# 1) First-time setup
 poetry env activate
 cite-hustle init
 
-# 2. Check what journals are available
+# 2) Explore supported journals
 cite-hustle journals --field accounting
 
-# 3. Collect article metadata
+# 3) Collect metadata
 cite-hustle collect --field accounting --year-start 2020 --year-end 2024
 
-# 4. Check status
+# 4) Check progress
 cite-hustle status
 
-# 5. Scrape SSRN for abstracts and PDF links
+# 5) Scrape SSRN
 cite-hustle scrape --limit 100 --delay 70
 
-# 6. Download PDFs (use --use-selenium to bypass Cloudflare)
+# 6) Download PDFs
 cite-hustle download --use-selenium --limit 50
 
-# 7. Search your collection
+# 7) Search collection
 cite-hustle search "earnings management"
 cite-hustle search "Smith" --author
 
-# 8. Check final status
+# 8) Final status
 cite-hustle status
 ```
 
 ---
 
-## Tips & Best Practices
+## Practical Tips
 
-### Rate Limiting
+### Rate limiting
 
-- **CrossRef API:** Built-in caching, parallel mode may hit limits
-- **SSRN Scraping:** Use `--delay 70` minimum. For unattended/VM runs, `--delay 90` is recommended
-- **PDF Downloads:** Use `--delay 2` minimum (with `--use-selenium`)
+- **CrossRef collection:** parallel mode is faster but may hit API limits
+- **SSRN scraping:** use higher delays for reliability (e.g., `70+`)
+- **PDF downloads:** with Selenium, small delays (e.g., `2-5`) are usually fine
 
-### Resumable Operations
+### Resumable operations
 
-- All operations save progress to database
-- Interrupted commands can be resumed by running again
-- Use `--limit` for testing before full runs
+- Commands persist progress to DB
+- Re-running continues from pending work
+- Use `--limit` for safe incremental testing
 
-### Search Not Working?
+### If search seems broken
 
 ```bash
 cite-hustle rebuild-fts
 ```
 
-### Parallel Collection
+### Debug with visible browser
 
 ```bash
-# Faster but may hit rate limits
-cite-hustle collect --field accounting --year-start 2023 --parallel
+cite-hustle scrape --no-headless --limit 5 --delay 70
+cite-hustle download --use-selenium --no-headless --limit 5
 ```
 
-### Progress Monitoring
+### Progress monitoring
 
 ```bash
-# Run in another terminal to watch progress
+# macOS/Linux
 watch -n 10 "poetry run cite-hustle status"
-```
-
-### Testing Commands
-
-```bash
-# Test with small limits first
-cite-hustle collect --field accounting --year-start 2024 --year-end 2024
-cite-hustle scrape --limit 5 --delay 70 --no-headless
-cite-hustle download --use-selenium --limit 5 --no-headless
 ```
 
 ---
 
 ## Help
 
-Get help for any command:
-
 ```bash
 cite-hustle --help
 cite-hustle <command> --help
 ```
 
-Example:
+Examples:
 
 ```bash
 cite-hustle collect --help
 cite-hustle scrape --help
+cite-hustle download --help
 ```
