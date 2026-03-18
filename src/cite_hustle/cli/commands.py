@@ -263,7 +263,7 @@ def scrape(ctx, limit, delay, threshold, headless):
 @click.option("--limit", default=None, type=int, help="Limit number of articles to enrich")
 @click.option("--year-start", default=None, type=int, help="Start year filter")
 @click.option("--year-end", default=None, type=int, help="End year filter")
-@click.option("--concurrency", default=8, type=int, help="Concurrent OpenAlex requests")
+@click.option("--concurrency", default=3, type=int, help="Concurrent OpenAlex requests")
 @click.option("--delay", default=0.0, type=float, help="Delay between OpenAlex requests (seconds)")
 @click.option("--force", is_flag=True, help="Overwrite existing abstracts")
 @click.option(
@@ -289,7 +289,7 @@ def enrich_openalex(
 
     Examples:
         cite-hustle enrich-openalex --limit 200
-        cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
+        cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 3
         cite-hustle enrich-openalex --force --skip-fts-rebuild
     """
     repo = ctx.obj["repo"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Dict, Iterable, Optional, Tuple
 from urllib.parse import quote
 
@@ -20,10 +21,10 @@ class OpenAlexEnricher:
     def __init__(
         self,
         repo: ArticleRepository,
-        concurrency: int = 8,
+        concurrency: int = 3,
         timeout_s: float = 20.0,
         min_length: int = 40,
-        max_retries: int = 3,
+        max_retries: int = 5,
         delay_s: float = 0.0,
     ):
         self.repo = repo
@@ -33,6 +34,8 @@ class OpenAlexEnricher:
         self.max_retries = max_retries
         self.delay_s = max(0.0, delay_s)
         self._semaphore = asyncio.Semaphore(self.concurrency)
+        # Global backoff: when any task hits 429, all tasks pause until this timestamp.
+        self._backoff_until: float = 0.0
 
     @staticmethod
     def normalize_doi(doi: str) -> Optional[str]:
@@ -56,6 +59,26 @@ class OpenAlexEnricher:
             return None
         return " ".join(word_index[i] for i in sorted(word_index.keys()))
 
+    async def _wait_for_global_backoff(self) -> None:
+        """If a 429 was recently received, pause until the backoff period expires."""
+        remaining = self._backoff_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    def _set_global_backoff(self, response: httpx.Response, attempt: int) -> float:
+        """Parse Retry-After header or use exponential backoff. Returns wait seconds."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                wait = float(retry_after)
+            except ValueError:
+                wait = 10.0 * (2**attempt)
+        else:
+            wait = 10.0 * (2**attempt)  # 10s, 20s, 40s, 80s, 160s
+        wait = min(wait, 180.0)
+        self._backoff_until = time.monotonic() + wait
+        return wait
+
     async def _fetch_abstract(
         self, client: httpx.AsyncClient, doi: str
     ) -> Tuple[Optional[str], Optional[str]]:
@@ -65,6 +88,8 @@ class OpenAlexEnricher:
             params["mailto"] = settings.crossref_email
 
         for attempt in range(self.max_retries):
+            await self._wait_for_global_backoff()
+
             try:
                 response = await client.get(url, params=params)
             except httpx.RequestError as exc:
@@ -75,11 +100,20 @@ class OpenAlexEnricher:
 
             if response.status_code == 404:
                 return None, "not_found"
-            if response.status_code in {429, 500, 502, 503, 504}:
+
+            if response.status_code == 429:
+                wait = self._set_global_backoff(response, attempt)
+                if attempt == self.max_retries - 1:
+                    return None, "http_429"
+                await asyncio.sleep(wait)
+                continue
+
+            if response.status_code in {500, 502, 503, 504}:
                 if attempt == self.max_retries - 1:
                     return None, f"http_{response.status_code}"
                 await asyncio.sleep(2**attempt)
                 continue
+
             if response.is_error:
                 return None, f"http_{response.status_code}"
 

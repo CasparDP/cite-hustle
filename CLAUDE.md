@@ -33,10 +33,11 @@ cite-hustle/
 │   │   ├── models.py          # DatabaseManager, schema, FTS index creation
 │   │   └── repository.py      # ArticleRepository - single gateway for all DB I/O
 │   └── collectors/
-│       ├── journals.py        # Journal registry (19 journals across 3 fields)
+│       ├── journals.py        # Journal registry (21 journals across 3 fields)
 │       ├── metadata.py        # CrossRef API collector
 │       ├── ssrn_scraper.py    # Selenium-based SSRN search + abstract extraction
 │       ├── selenium_pdf_downloader.py  # Selenium PDF downloader (recommended)
+│       ├── openalex_enricher.py        # OpenAlex API enricher (async, fetches missing abstracts)
 │       └── pdf_downloader.py  # Legacy HTTP downloader (usually blocked by Cloudflare)
 ├── pyproject.toml             # Poetry config, dependencies, scripts
 ├── CLI-CHEATSHEET.md          # Complete CLI reference
@@ -54,6 +55,7 @@ cite-hustle/
 | CrossRef | `collectors/metadata.py` | `MetadataCollector` fetches article metadata via `crossref_commons` |
 | SSRN Scraper | `collectors/ssrn_scraper.py` | `SSRNScraper` searches SSRN, extracts abstracts using Selenium |
 | PDF Download | `collectors/selenium_pdf_downloader.py` | `SeleniumPDFDownloader` downloads PDFs (Cloudflare-safe) |
+| OpenAlex | `collectors/openalex_enricher.py` | `OpenAlexEnricher` fetches missing abstracts via OpenAlex API (async) |
 
 ## Storage Conventions
 
@@ -95,8 +97,14 @@ poetry run cite-hustle download --use-selenium --no-headless  # Debug mode
 poetry run cite-hustle search "earnings management"
 poetry run cite-hustle search "Smith" --author
 
+# Enrich missing abstracts from OpenAlex (async, no browser needed)
+poetry run cite-hustle enrich-openalex --limit 200
+poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
+poetry run cite-hustle enrich-openalex --force --skip-fts-rebuild
+
 # Utilities
 poetry run cite-hustle status          # Database statistics
+poetry run cite-hustle dashboard       # Dashboard overview (journals, coverage, recent activity)
 poetry run cite-hustle journals        # List supported journals
 poetry run cite-hustle sample          # Show sample articles
 poetry run cite-hustle rebuild-fts     # Rebuild FTS indexes
@@ -145,6 +153,16 @@ The scraping/downloading stack currently uses a mixed Selenium approach:
 - Automatic cookie acceptance and Cloudflare challenge handling
 
 Implementation details may differ between `ssrn_scraper.py` and `selenium_pdf_downloader.py`, so prefer code-level verification when changing anti-detection behavior.
+
+### OpenAlex Enrichment Pattern
+Use `enrich-openalex` to fill missing abstracts without browser automation:
+
+```python
+# Key repo methods for OpenAlex enrichment
+pending = repo.get_articles_missing_abstract(limit=200, year_start=2020, year_end=2024)
+repo.upsert_abstract(doi, abstract, force=False)   # idempotent; won't overwrite unless force=True
+count = repo.get_openalex_enriched_count()         # tracks via processing_log stage='enrich_openalex'
+```
 
 ### HTML Storage Pattern
 ```python
@@ -261,6 +279,30 @@ poetry run cite-hustle scrape --limit 100 --delay 5
 ```
 
 **Why this exists**: The `get_pending_ssrn_scrapes()` method only returns articles with NO entry in `ssrn_pages`. Failed scrapes have entries (with error messages), so they won't be retried automatically. This script deletes those failed entries, making them "pending" again.
+
+### Cleanup Non-Articles (`scripts/cleanup_non_articles.py`)
+
+Removes book reviews, front matter, covers, and other non-article content collected before filtering was added.
+
+```bash
+poetry run python scripts/cleanup_non_articles.py
+```
+
+### Cleanup Bad SSRN HTML (`scripts/cleanup_bad_ssrn_html.py`)
+
+Removes Cloudflare "are you human" HTML artifacts (~20,800 bytes) and resets those DOIs for re-scraping.
+
+```bash
+poetry run python scripts/cleanup_bad_ssrn_html.py [--size-bytes 20833] [--tolerance-bytes 500]
+```
+
+### Re-extract Abstracts from HTML (`extract_abstracts_from_html.py`)
+
+Re-processes saved SSRN HTML files for papers where abstract extraction failed during scraping.
+
+```bash
+poetry run python extract_abstracts_from_html.py
+```
 
 ## Current Tasks / Known Issues
 

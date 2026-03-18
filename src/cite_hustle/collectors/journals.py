@@ -1,11 +1,13 @@
 """Journal registry for field-specific journals"""
+
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict, List
 
 
 @dataclass
 class Journal:
     """Represents an academic journal"""
+
     name: str
     issn: str
     field: str  # 'accounting', 'finance', 'economics'
@@ -30,7 +32,9 @@ class JournalRegistry:
         Journal("Journal of Finance", "0022-1082", "finance", "Wiley"),
         Journal("Journal of Financial Economics", "0304-405X", "finance", "Elsevier"),
         Journal("Review of Financial Studies", "0893-9454", "finance", "Oxford"),
-        Journal("Journal of Financial and Quantitative Analysis", "0022-1090", "finance", "Cambridge"),
+        Journal(
+            "Journal of Financial and Quantitative Analysis", "0022-1090", "finance", "Cambridge"
+        ),
         Journal("Financial Management", "0046-3892", "finance", "Wiley"),
         Journal("Management Science", "0025-1909", "finance", "INFORMS"),
         Journal("Journal of Corporate Finance", "0929-1199", "finance", "Elsevier"),
@@ -46,6 +50,7 @@ class JournalRegistry:
         Journal("Journal of Economic Literature", "0022-0515", "economics", "AEA"),
         Journal("Journal of Economic Perspectives", "0895-3309", "economics", "AEA"),
         Journal("Journal of Labor Economics", "0734-306X", "economics", "Chicago"),
+        Journal("Journal of Human Resources", "0022-166X", "economics", "Wisconsin"),
     ]
 
     @classmethod
@@ -57,16 +62,18 @@ class JournalRegistry:
     def get_by_field(cls, field: str) -> List[Journal]:
         """Get journals by research field"""
         field = field.lower()
-        if field == 'accounting':
+        if field == "accounting":
             return cls.ACCOUNTING
-        elif field == 'finance':
+        elif field == "finance":
             return cls.FINANCE
-        elif field == 'economics':
+        elif field == "economics":
             return cls.ECONOMICS
-        elif field == 'all':
+        elif field == "all":
             return cls.get_all_journals()
         else:
-            raise ValueError(f"Unknown field: {field}. Use 'accounting', 'finance', 'economics', or 'all'")
+            raise ValueError(
+                f"Unknown field: {field}. Use 'accounting', 'finance', 'economics', or 'all'"
+            )
 
     @classmethod
     def get_journal_dict(cls) -> Dict[str, Journal]:
@@ -74,6 +81,6 @@ class JournalRegistry:
         return {j.issn: j for j in cls.get_all_journals()}
 
     @classmethod
-    def get_issn_list(cls, field: str = 'all') -> List[str]:
+    def get_issn_list(cls, field: str = "all") -> List[str]:
         """Get list of ISSNs for a field"""
         return [j.issn for j in cls.get_by_field(field)]
