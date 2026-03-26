@@ -53,6 +53,15 @@ class JournalRegistry:
         Journal("Journal of Human Resources", "0022-166X", "economics", "Wisconsin"),
     ]
 
+    # Top Management Journals
+
+    MANAGEMENT  [
+        Journal("Human Resource Management", "0002-8282", "economics", "AEA"),
+
+  s
+    ]
+
+
     @classmethod
     def get_all_journals(cls) -> List[Journal]:
         """Get all journals across all fields"""
