@@ -33,12 +33,16 @@ cite-hustle/
 │   │   ├── models.py          # DatabaseManager, schema, FTS index creation
 │   │   └── repository.py      # ArticleRepository - single gateway for all DB I/O
 │   └── collectors/
-│       ├── journals.py        # Journal registry (21 journals across 3 fields)
+│       ├── journals.py        # Journal registry (28 journals across 4 fields)
 │       ├── metadata.py        # CrossRef API collector
 │       ├── ssrn_scraper.py    # Selenium-based SSRN search + abstract extraction
 │       ├── selenium_pdf_downloader.py  # Selenium PDF downloader (recommended)
 │       ├── openalex_enricher.py        # OpenAlex API enricher (async, fetches missing abstracts)
 │       └── pdf_downloader.py  # Legacy HTTP downloader (usually blocked by Cloudflare)
+├── scripts/
+│   ├── reset_failed_scrapes.py      # Reset failed SSRN scrapes for retry
+│   ├── cleanup_non_articles.py      # Remove non-article content from DB
+│   └── cleanup_bad_ssrn_html.py     # Remove Cloudflare challenge HTML artifacts
 ├── pyproject.toml             # Poetry config, dependencies, scripts
 ├── CLI-CHEATSHEET.md          # Complete CLI reference
 └── README.md                  # User documentation
@@ -84,6 +88,9 @@ poetry run cite-hustle collect --field all --year-start 2024 --skip-fts-rebuild
 
 # Force re-fetch (clears cache and bypasses "already in DB" check)
 poetry run cite-hustle collect --field all --year-start 2024 --year-end 2025 --force
+
+# Parallel fetch (faster but risks CrossRef rate limits)
+poetry run cite-hustle collect --field all --year-start 2024 --parallel
 
 # Scrape SSRN for abstracts
 poetry run cite-hustle scrape --limit 50 --delay 5 --threshold 85
@@ -194,7 +201,7 @@ repo.insert_ssrn_page(doi, ssrn_url, html_content=None, html_file_path=html_path
 ### Add a New Journal
 Update `collectors/journals.py`:
 ```python
-# In appropriate list (ACCOUNTING, FINANCE, or ECONOMICS)
+# In appropriate list (ACCOUNTING, FINANCE, ECONOMICS, or MANAGEMENT)
 Journal("Journal Name", "ISSN-CODE", "field", "Publisher"),
 ```
 
@@ -303,11 +310,6 @@ Re-processes saved SSRN HTML files for papers where abstract extraction failed d
 ```bash
 poetry run python extract_abstracts_from_html.py
 ```
-
-## Current Tasks / Known Issues
-
-### Legacy PDF Downloader
-The HTTP-based `pdf_downloader.py` is disabled due to Cloudflare protection. Keep for future testing but always use `--use-selenium` for production downloads.
 
 ## Decisions Log
 
