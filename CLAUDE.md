@@ -5,6 +5,11 @@
 ## Quick Start Commands
 
 ```bash
+# Common workflow (see Makefile for full target list)
+make update           # collect --force for current year (fast, detects new papers)
+make enrich-year      # enrich missing abstracts for current year (run after update)
+make update YEAR=2024 # target a specific year
+
 # Install dependencies
 poetry install
 
@@ -243,6 +248,8 @@ fts_main_ssrn_pages (on abstract)
 | ChromeDriver not found | `brew install --cask chromedriver` |
 | DuckDB lock error | Close other DuckDB connections (CLI tools, notebooks) |
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
+| Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
+| `enrich-openalex` shows thousands of candidates unexpectedly | Candidates = ALL articles for that year missing abstracts, not just newly added ones -- use `make enrich-year` separately, not inline with collect |
 
 ## Environment Variables
 

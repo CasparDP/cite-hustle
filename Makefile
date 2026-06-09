@@ -26,7 +26,7 @@ rebuild-fts:
 
 # ── Data pipeline (individual steps) ─────────────────────────────────────────
 
-.PHONY: collect scrape enrich download
+.PHONY: collect scrape enrich enrich-year download
 
 collect:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
@@ -36,6 +36,9 @@ scrape:
 
 enrich:
 	$(RUN) enrich-openalex --concurrency 8
+
+enrich-year:
+	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
 
 download:
 	$(RUN) download --use-selenium
@@ -48,11 +51,10 @@ download:
 .PHONY: update update-full
 
 update:
-	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
-	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
+	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force
 
 update-full:
-	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
+	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force
 	$(RUN) scrape --delay 5
 	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
 
