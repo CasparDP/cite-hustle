@@ -50,7 +50,8 @@ class Settings(BaseSettings):
         return path
     
     # API Settings
-    crossref_email: str = "spiny.bubble0v@icloud.com"
+    # Optional CrossRef "polite pool" / OpenAlex mailto; set via CITE_HUSTLE_CROSSREF_EMAIL.
+    crossref_email: str = ""
     max_workers: int = 3
     
     # Scraping Settings

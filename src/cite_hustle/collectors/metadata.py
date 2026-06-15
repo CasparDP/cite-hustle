@@ -158,10 +158,11 @@ class MetadataCollector:
 
         # Fetch from CrossRef API using new library
         try:
-            # Set email for polite API usage via environment variable
+            # Set email for polite API usage via environment variable (if provided)
             import os
 
-            os.environ["CR_API_MAILTO"] = settings.crossref_email
+            if settings.crossref_email:
+                os.environ["CR_API_MAILTO"] = settings.crossref_email
 
             filter_params = {
                 "issn": issn,

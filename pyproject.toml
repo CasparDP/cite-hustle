@@ -3,6 +3,7 @@ name = "cite-hustle"
 version = "0.1.0"
 description = "Academic literature research tool for automated paper collection"
 authors = ["CasparDP <58906924+CasparDP@users.noreply.github.com>"]
+license = "MIT"
 readme = "README.md"
 packages = [{include = "cite_hustle", from = "src"}]
 
