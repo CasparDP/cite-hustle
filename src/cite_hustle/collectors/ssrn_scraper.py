@@ -147,22 +147,24 @@ class SSRNScraper:
         # or --disable-blink-features here – undetected-chromedriver handles all
         # of that automatically and adding them is itself a detection signal.
 
-        # Detect installed Chrome major version so the matching chromedriver is used
+        # Detect installed Chrome major version so the matching chromedriver is used.
+        # Only pin version_main when we actually detected it. Passing None makes
+        # undetected-chromedriver grab "latest" and can fail to start on a mismatch.
+        kwargs = {"options": chrome_options, "headless": self.headless}
         chrome_major = self._detect_chrome_major_version()
+        if chrome_major is not None:
+            kwargs["version_main"] = chrome_major
 
         # Initialize undetected-chromedriver
-        self.driver = uc.Chrome(
-            options=chrome_options,
-            headless=self.headless,
-            version_main=chrome_major,
-        )
-        print(f"  ✓ undetected-chromedriver started (profile: {profile['name']}, chrome v{chrome_major})")
+        self.driver = uc.Chrome(**kwargs)
+        version_label = f"chrome v{chrome_major}" if chrome_major is not None else "chrome version auto"
+        print(f"  ✓ undetected-chromedriver started (profile: {profile['name']}, {version_label})")
 
         self._apply_session_overrides()
         return self.driver
 
     @staticmethod
-    def _detect_chrome_major_version() -> int:
+    def _detect_chrome_major_version() -> Optional[int]:
         """Return the major version of the locally installed Chrome/Chromium."""
         import subprocess, re
         candidates = [
@@ -278,10 +280,10 @@ class SSRNScraper:
 
             # Multiple markers for Cloudflare challenge pages
             markers = [
-                'data-cfasync',
-                'cf_clearance',
+                'data-cfasync' in page_source,
+                'cf_clearance' in page_source,
                 'challenge' in page_source and 'cloudflare' in page_source,
-                '__cf_bm',
+                '__cf_bm' in page_source,
             ]
 
             if any(markers):
