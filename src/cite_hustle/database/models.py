@@ -1,23 +1,50 @@
 """DuckDB database models and schema management"""
+import time
 import duckdb
 from pathlib import Path
 
 
 class DatabaseManager:
     """Centralized DuckDB connection and schema management"""
-    
+
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
         self.conn = None
-    
-    def connect(self):
-        """Connect to DuckDB with optimized settings"""
-        self.conn = duckdb.connect(self.db_path)
-        
+
+    def connect(self, read_only: bool = False, max_wait: int = 0):
+        """Connect to DuckDB and load the full-text search extension.
+
+        DuckDB allows either a single read-write connection or several
+        read-only connections to a file, never both at once.
+
+        Args:
+            read_only: open the database read-only so this process can coexist
+                with other readers (e.g. an MCP server that keeps the DB open).
+                Use for commands that only query.
+            max_wait: if > 0, retry for up to this many seconds when the file is
+                locked by another process before giving up. Use for write
+                commands that must eventually obtain exclusive access.
+        """
+        deadline = time.monotonic() + max_wait
+        delay = 2.0
+        while True:
+            try:
+                self.conn = duckdb.connect(self.db_path, read_only=read_only)
+                break
+            except duckdb.Error as e:
+                if "lock" not in str(e).lower() or time.monotonic() >= deadline:
+                    raise
+                print(
+                    f"  ⏳ Database is held by another process; retrying in {delay:.0f}s "
+                    f"(waiting up to {max_wait}s). Close other connections to speed this up."
+                )
+                time.sleep(delay)
+                delay = min(delay * 1.5, 30.0)
+
         # Install and load full-text search extension
         self.conn.execute("INSTALL fts;")
         self.conn.execute("LOAD fts;")
-        
+
         return self.conn
     
     def initialize_schema(self):

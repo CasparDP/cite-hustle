@@ -41,7 +41,7 @@ enrich-year:
 	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
 
 download:
-	$(RUN) download --use-selenium
+	$(RUN) download
 
 # ── Update (main workflow) ────────────────────────────────────────────────────
 # make update           → collect + enrich for current year (fast, no browser)

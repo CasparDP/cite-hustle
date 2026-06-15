@@ -191,50 +191,21 @@ class ArticleRepository:
 
         return self.conn.execute(query).fetchdf()
 
-    def get_pending_pdf_downloads(self, limit: Optional[int] = None) -> pd.DataFrame:
-        """Get SSRN pages with URLs but no downloaded PDF"""
-        query = """
-            SELECT s.doi, a.title, s.ssrn_url, s.pdf_url, s.html_file_path
-            FROM ssrn_pages s
-            JOIN articles a ON s.doi = a.doi
-            WHERE s.ssrn_url IS NOT NULL
-              AND (s.pdf_downloaded = FALSE OR s.pdf_downloaded IS NULL)
-            ORDER BY a.year DESC
-        """
-        if limit:
-            query += f" LIMIT {limit}"
-
-        return self.conn.execute(query).fetchdf()
-
     def get_articles_with_ssrn_urls(
-        self, limit: Optional[int] = None, downloaded: bool = False
+        self,
+        limit: Optional[int] = None,
+        downloaded: Optional[bool] = None,
+        include_unavailable: bool = True,
     ) -> pd.DataFrame:
-        """Get articles with SSRN URLs, optionally filtering by download status"""
-        query = """
-            SELECT s.doi, a.title, s.ssrn_url, s.pdf_downloaded
-            FROM ssrn_pages s
-            JOIN articles a ON s.doi = a.doi
-            WHERE s.ssrn_url IS NOT NULL
-        """
-
-        if not downloaded:
-            query += " AND (s.pdf_downloaded = FALSE OR s.pdf_downloaded IS NULL)"
-
-        query += " ORDER BY a.year DESC"
-
-        if limit:
-            query += f" LIMIT {limit}"
-
-        return self.conn.execute(query).fetchdf()
-
-    def get_articles_with_ssrn_urls(
-        self, limit: Optional[int] = None, downloaded: bool = None
-    ) -> pd.DataFrame:
-        """Get articles that have SSRN URLs
+        """Get articles that have SSRN URLs.
 
         Args:
             limit: Maximum number of articles to return
-            downloaded: If True, only downloaded PDFs. If False, only undownloaded. If None, all.
+            downloaded: If True, only downloaded PDFs. If False, only
+                undownloaded. If None, all.
+            include_unavailable: If False, skip papers previously marked as
+                "not available for download" (see mark_pdf_unavailable), so
+                repeat runs don't keep retrying them.
         """
         query = """
             SELECT s.doi, a.title, s.ssrn_url, s.pdf_downloaded, s.pdf_file_path
@@ -249,12 +220,30 @@ class ArticleRepository:
             else:
                 query += " AND (s.pdf_downloaded = FALSE OR s.pdf_downloaded IS NULL)"
 
+        if not include_unavailable:
+            query += """
+              AND NOT EXISTS (
+                  SELECT 1 FROM processing_log p
+                  WHERE p.doi = s.doi
+                    AND p.stage = 'download_pdf'
+                    AND p.status = 'unavailable'
+              )
+            """
+
         query += " ORDER BY a.year DESC"
 
         if limit:
-            query += f" LIMIT {limit}"
+            query += f" LIMIT {int(limit)}"
 
         return self.conn.execute(query).fetchdf()
+
+    def mark_pdf_unavailable(self, doi: str):
+        """Record that a paper has no downloadable PDF on SSRN.
+
+        Stored in processing_log so get_articles_with_ssrn_urls(
+        include_unavailable=False) can skip it on later runs.
+        """
+        self.log_processing(doi, "download_pdf", "unavailable", "Not available for download")
 
     def get_ssrn_page_by_doi(self, doi: str) -> Optional[Dict]:
         """Get SSRN page data for a specific DOI"""

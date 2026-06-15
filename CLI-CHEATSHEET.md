@@ -84,7 +84,7 @@ cite-hustle journals [OPTIONS]
 
 **Options:**
 
-- `--field <field>` - Filter by field: `accounting`, `finance`, `economics`, or `all` (default: `all`)
+- `--field <field>` - Filter by field: `accounting`, `finance`, `economics`, `management`, or `all` (default: `all`)
 
 **Examples:**
 
@@ -110,7 +110,7 @@ cite-hustle collect [OPTIONS]
 
 **Options:**
 
-- `--field <field>` - `accounting`, `finance`, `economics`, or `all` (default: `all`)
+- `--field <field>` - `accounting`, `finance`, `economics`, `management`, or `all` (default: `all`)
 - `--year-start <year>` - Start year (default: `2004`)
 - `--year-end <year>` - End year (default: `2025`)
 - `--parallel` / `--sequential` - Enable parallel processing (default: sequential)
@@ -192,7 +192,7 @@ cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 - `--limit <n>` - Limit number of articles to enrich (default: all missing)
 - `--year-start <year>` - Start year filter (optional)
 - `--year-end <year>` - End year filter (optional)
-- `--concurrency <n>` - Concurrent OpenAlex requests (default: `8`)
+- `--concurrency <n>` - Concurrent OpenAlex requests (default: `3`)
 - `--delay <seconds>` - Delay between OpenAlex requests (default: `0`)
 - `--force` - Overwrite existing abstracts
 - `--print-abstracts <n>` - Print the most recent enriched abstracts
@@ -204,7 +204,7 @@ cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 
 ### 4. `download`
 
-Download PDFs from SSRN for scraped articles.
+Download available SSRN PDFs for scraped articles.
 
 ```bash
 cite-hustle download [OPTIONS]
@@ -213,30 +213,30 @@ cite-hustle download [OPTIONS]
 **Options:**
 
 - `--limit <n>` - Limit number of PDFs to download (default: all pending)
-- `--delay <seconds>` - Delay between downloads (default: `2`)
-- `--use-selenium` - Use browser automation (recommended for SSRN/Cloudflare)
-- `--headless` / `--no-headless` - Run browser in headless mode (default: headless, Selenium path only)
+- `--delay <seconds>` - Base delay between downloads, jittered (default: `3`)
+- `--headless` / `--no-headless` - Run browser headless (default: visible). Headless is blocked by SSRN's Cloudflare; leave it off.
+- `--retry-unavailable` - Also re-check papers previously marked "not available for download"
 
 **Examples:**
 
 ```bash
-cite-hustle download --use-selenium --limit 50
-cite-hustle download --use-selenium --no-headless
-cite-hustle download --use-selenium --delay 5
+cite-hustle download                  # all pending papers
 cite-hustle download --limit 50
+cite-hustle download --limit 5 --delay 5
+caffeinate -i poetry run cite-hustle download   # macOS: run unattended without sleeping
 ```
 
 **What it does:**
 
-- Downloads PDFs for articles with SSRN pages
-- Uses browser automation when `--use-selenium` is enabled
-- Saves PDFs to configured directory
-- Updates database download status
-- Logs successful/failed downloads
+- Opens a real (visible) Chrome window to pass SSRN's Cloudflare protection
+- Downloads only author-posted, openly available PDFs (no login required)
+- Marks papers with no full text "not available" and skips them next time
+- Saves progress after every paper, so runs are resumable and unattended-safe
 
-**When to use:** After `scrape` when you want local PDFs
+**When to use:** After `scrape`/`enrich-openalex`, when you want local PDFs
 
-**Note:** Direct HTTP downloads are often blocked by bot protection. Prefer `--use-selenium`.
+**Note:** Some papers are unavailable because the author never posted full text;
+those are reported as "not available", not failures.
 
 ---
 
@@ -336,7 +336,7 @@ cite-hustle status
 cite-hustle scrape --limit 100 --delay 70
 
 # 6) Download PDFs
-cite-hustle download --use-selenium --limit 50
+cite-hustle download --limit 50
 
 # 7) Search collection
 cite-hustle search "earnings management"
@@ -372,7 +372,7 @@ cite-hustle rebuild-fts
 
 ```bash
 cite-hustle scrape --no-headless --limit 5 --delay 70
-cite-hustle download --use-selenium --no-headless --limit 5
+cite-hustle download --no-headless --limit 5
 ```
 
 ### Progress monitoring

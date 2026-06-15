@@ -32,7 +32,9 @@ class JournalRegistry:
         Journal("Journal of Finance", "0022-1082", "finance", "Wiley"),
         Journal("Journal of Financial Economics", "0304-405X", "finance", "Elsevier"),
         Journal("Review of Financial Studies", "0893-9454", "finance", "Oxford"),
-        Journal("Journal of Financial and Quantitative Analysis", "0022-1090", "finance", "Cambridge"),
+        Journal(
+            "Journal of Financial and Quantitative Analysis", "0022-1090", "finance", "Cambridge"
+        ),
         Journal("Financial Management", "0046-3892", "finance", "Wiley"),
         Journal("Management Science", "0025-1909", "finance", "INFORMS"),
         Journal("Journal of Corporate Finance", "0929-1199", "finance", "Elsevier"),
@@ -54,14 +56,13 @@ class JournalRegistry:
     # Top Management Journals
 
     MANAGEMENT = [
-        Journal("Human Resource Management", "0002-8282", "management", "Wiley"),
+        Journal("Human Resource Management", "0090-4848", "management", "Wiley"),
         Journal("Academy of Management Annals", "1941-6520", "management", "AOM"),
         Journal("ACADEMY OF MANAGEMENT JOURNAL", "0001-4273", "management", "AOM"),
         Journal("ACADEMY OF MANAGEMENT REVIEW", "0363-7425", "management", "AOM"),
         Journal("ADMINISTRATIVE SCIENCE QUARTERLY", "0001-8392", "management", "SAGE"),
         Journal("JOURNAL OF MANAGEMENT", "0149-2063", "management", "SAGE"),
     ]
-
 
     @classmethod
     def get_all_journals(cls) -> List[Journal]:
@@ -88,6 +89,24 @@ class JournalRegistry:
             )
 
     @classmethod
+    def validate_unique_issns(cls) -> None:
+        """Assert all ISSNs are unique across the registry.
+
+        ISSNs are the lookup key for CrossRef fetches and for get_journal_dict(),
+        so a collision means one journal silently fetches another's articles and
+        gets dropped from the dict. Raise loudly instead.
+        """
+        seen: Dict[str, Journal] = {}
+        for j in cls.get_all_journals():
+            if j.issn in seen:
+                other = seen[j.issn]
+                raise ValueError(
+                    f"Duplicate ISSN {j.issn} in journal registry: "
+                    f"'{other.name}' ({other.field}) and '{j.name}' ({j.field})"
+                )
+            seen[j.issn] = j
+
+    @classmethod
     def get_journal_dict(cls) -> Dict[str, Journal]:
         """Get dictionary of journals by ISSN"""
         return {j.issn: j for j in cls.get_all_journals()}
@@ -96,3 +115,7 @@ class JournalRegistry:
     def get_issn_list(cls, field: str = "all") -> List[str]:
         """Get list of ISSNs for a field"""
         return [j.issn for j in cls.get_by_field(field)]
+
+
+# Fail fast at import time if two journals share an ISSN.
+JournalRegistry.validate_unique_issns()
