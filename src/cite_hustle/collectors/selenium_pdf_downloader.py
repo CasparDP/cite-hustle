@@ -1,39 +1,58 @@
-"""Selenium-based PDF downloader for SSRN papers
+"""Selenium-based PDF downloader for SSRN papers.
 
-This module provides a browser-based PDF downloader that can bypass SSRN's
-Cloudflare protection by using undetected-chromedriver to avoid detection.
+SSRN sits behind Cloudflare. The download flow that actually works is:
+
+1. Run a *visible* (non-headless) Chrome via undetected-chromedriver. Headless
+   Chrome is reliably flagged by Cloudflare's Turnstile and never gets past the
+   "Just a moment..." interstitial, so the paper page never loads.
+2. Wait for the Turnstile interstitial to clear (a real browser passes it
+   automatically in a few seconds).
+3. Accept the cookie banner once, otherwise its overlay intercepts clicks.
+4. Click the "Download This Paper" button with a JavaScript click. A plain
+   ``element.click()`` is intercepted by the sticky header/cookie overlay, and
+   navigating straight to the ``Delivery.cfm`` URL is bounced back to the
+   abstract page (SSRN checks the referer), so neither alternative works.
+
+Papers whose full text was never posted show a disabled "Not Available for
+Download" button; those are reported as ``unavailable`` so they are skipped on
+later runs instead of being retried forever.
 """
+
 import time
-import os
+import random
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from tqdm import tqdm
 
 
 class SeleniumPDFDownloader:
-    """Download PDFs from SSRN using browser automation to bypass Cloudflare"""
+    """Download PDFs from SSRN using a real browser session."""
 
-    def __init__(self,
-                 storage_dir: Path,
-                 delay: int = 3,
-                 headless: bool = True,
-                 download_timeout: int = 60,
-                 page_timeout: int = 30):
+    def __init__(
+        self,
+        storage_dir: Path,
+        delay: int = 3,
+        headless: bool = False,
+        download_timeout: int = 60,
+        page_timeout: int = 30,
+        restart_every: int = 40,
+    ):
         """
-        Initialize Selenium PDF downloader
-
         Args:
             storage_dir: Directory to save PDFs
-            delay: Delay between downloads in seconds
-            headless: Run browser in headless mode
-            download_timeout: Max seconds to wait for PDF download
+            delay: Base delay between downloads in seconds (jittered)
+            headless: Run browser headless. NOTE: headless is blocked by SSRN's
+                Cloudflare and is kept only for debugging; leave it False.
+            download_timeout: Max seconds to wait for a PDF download to finish
             page_timeout: Max seconds to wait for page elements
+            restart_every: Recreate the browser after this many papers to keep
+                long unattended runs stable (0 disables).
         """
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -41,45 +60,65 @@ class SeleniumPDFDownloader:
         self.headless = headless
         self.download_timeout = download_timeout
         self.page_timeout = page_timeout
+        self.restart_every = restart_every
 
-        # Setup downloads directory - we'll use a temp folder then move files
+        # Downloads land in a temp folder, then get renamed to <doi>.pdf
         self.temp_download_dir = self.storage_dir / "temp_downloads"
         self.temp_download_dir.mkdir(parents=True, exist_ok=True)
 
         self.driver = None
         self.cookies_accepted = False
 
+    # ── Browser lifecycle ──────────────────────────────────────────────────
+
     def setup_webdriver(self):
         """Set up undetected-chromedriver with download preferences."""
         chrome_options = uc.ChromeOptions()
-
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--window-size=1400,1000")
 
-        # Configure downloads
-        chrome_options.add_experimental_option("prefs", {
-            "download.default_directory": str(self.temp_download_dir),
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "plugins.always_open_pdf_externally": True,  # Don't open PDFs in browser
-            "plugins.plugins_disabled": ["Chrome PDF Viewer"],
-        })
-
-        self.driver = uc.Chrome(
-            options=chrome_options,
-            headless=self.headless,
-            version_main=self._detect_chrome_major_version(),
+        chrome_options.add_experimental_option(
+            "prefs",
+            {
+                "download.default_directory": str(self.temp_download_dir),
+                "download.prompt_for_download": False,
+                "download.directory_upgrade": True,
+                "plugins.always_open_pdf_externally": True,  # download, don't render
+            },
         )
-        print("  ✓ undetected-chromedriver started for PDF downloads")
 
+        # Only pin version_main when we actually detected it. Passing None makes
+        # undetected-chromedriver grab "latest", which can mismatch the installed
+        # Chrome and fail to start.
+        kwargs = {"options": chrome_options, "headless": self.headless}
+        chrome_major = self._detect_chrome_major_version()
+        if chrome_major is not None:
+            kwargs["version_main"] = chrome_major
+
+        self.driver = uc.Chrome(**kwargs)
+        self.cookies_accepted = False
+        if self.headless:
+            print("  ⚠️  Headless mode is blocked by SSRN's Cloudflare; use visible mode.")
+        print("  ✓ undetected-chromedriver started for PDF downloads")
         return self.driver
 
+    def quit(self):
+        """Close the browser if open."""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
     @staticmethod
-    def _detect_chrome_major_version():
+    def _detect_chrome_major_version() -> Optional[int]:
         """Return the major version of the locally installed Chrome/Chromium."""
-        import subprocess, re
+        import subprocess
+        import re
+
         candidates = [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "google-chrome",
@@ -99,403 +138,250 @@ class SeleniumPDFDownloader:
                 continue
         return None
 
-    def accept_cookies(self, timeout: int = 10):
-        """Accept cookies if banner appears"""
+    # ── Page handling ──────────────────────────────────────────────────────
+
+    def wait_for_cloudflare(self, timeout: int = 40) -> bool:
+        """Wait until the Cloudflare 'Just a moment...' interstitial clears.
+
+        Returns True if the real page loaded, False if still challenged.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(2)
+            try:
+                if "just a moment" not in self.driver.page_source.lower():
+                    return True
+            except WebDriverException:
+                pass
+        return False
+
+    def accept_cookies(self, timeout: int = 8):
+        """Accept the OneTrust cookie banner once (its overlay blocks clicks)."""
         if self.cookies_accepted:
             return
-
         try:
-            cookie_button = WebDriverWait(self.driver, timeout).until(
+            WebDriverWait(self.driver, timeout).until(
                 EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
-            )
-            cookie_button.click()
-            self.cookies_accepted = True
+            ).click()
             print("  ✓ Accepted cookies")
+            time.sleep(1)
         except TimeoutException:
-            # No cookie banner or already accepted
-            self.cookies_accepted = True
+            pass  # no banner this session
+        self.cookies_accepted = True
 
-    def handle_cloudflare_challenge(self, timeout: int = 30):
-        """Handle Cloudflare 'Verify you are human' checkbox if present
+    def _find_download_button(self):
+        """Return (element, available) for the SSRN download control.
 
-        Args:
-            timeout: Max seconds to wait for challenge to complete
-
-        Returns:
-            True if challenge was handled or not present, False if failed
+        - (element, True): an enabled "Download This Paper" button.
+        - (None, False): the paper has no posted full text (the page shows a
+          disabled "Not Available for Download" button).
+        - (None, None): no recognizable download control (treat as a failure
+          worth retrying).
         """
-        try:
-            # Wait a moment for Cloudflare to load
-            time.sleep(2)
+        # An enabled download button links to Delivery.cfm and is not disabled.
+        for el in self.driver.find_elements(By.CSS_SELECTOR, "a[href*='Delivery.cfm']"):
+            cls = (el.get_attribute("class") or "").lower()
+            if "disabled" not in cls and "no-availab" not in cls:
+                return el, True
 
-            # Check if we're on a Cloudflare challenge page
-            page_source = self.driver.page_source.lower()
-            if 'cloudflare' not in page_source and 'just a moment' not in page_source:
-                # No Cloudflare challenge detected
-                return True
+        # No enabled button: is the paper explicitly flagged as unavailable?
+        if "not available for download" in self.driver.page_source.lower():
+            return None, False
+        if self.driver.find_elements(
+            By.CSS_SELECTOR, "a[class*='no-availab'], a[class*='btn-disabled']"
+        ):
+            return None, False
 
-            print("  → Cloudflare challenge detected, attempting to solve...")
+        return None, None
 
-            # Try to find and click the verification checkbox
-            # Cloudflare often uses an iframe for the checkbox
-            try:
-                # Look for Cloudflare iframe
-                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+    # ── Single download ──────────────────────────────────────────────────────
 
-                for iframe in iframes:
-                    try:
-                        # Switch to iframe
-                        self.driver.switch_to.frame(iframe)
-
-                        # Look for the checkbox using various selectors
-                        checkbox_selectors = [
-                            "input[type='checkbox']",
-                            "#challenge-stage input",
-                            ".ctp-checkbox-label",
-                            "label",
-                        ]
-
-                        for selector in checkbox_selectors:
-                            try:
-                                checkbox = WebDriverWait(self.driver, 3).until(
-                                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                )
-                                checkbox.click()
-                                print("  ✓ Clicked Cloudflare verification checkbox")
-
-                                # Switch back to main content
-                                self.driver.switch_to.default_content()
-
-                                # Wait for challenge to complete
-                                time.sleep(5)
-
-                                # Check if we're past the challenge
-                                wait_start = time.time()
-                                while time.time() - wait_start < timeout:
-                                    current_source = self.driver.page_source.lower()
-                                    if 'cloudflare' not in current_source or 'just a moment' not in current_source:
-                                        print("  ✓ Cloudflare challenge passed")
-                                        return True
-                                    time.sleep(2)
-
-                                break
-                            except (TimeoutException, NoSuchElementException):
-                                continue
-
-                        # Switch back to main content before trying next iframe
-                        self.driver.switch_to.default_content()
-
-                    except Exception as e:
-                        # Switch back to main content if error occurred
-                        self.driver.switch_to.default_content()
-                        continue
-
-                # If we get here, try waiting for Cloudflare to complete automatically
-                print("  → Waiting for Cloudflare to complete automatically...")
-                wait_start = time.time()
-                while time.time() - wait_start < timeout:
-                    current_source = self.driver.page_source.lower()
-                    if 'cloudflare' not in current_source or 'just a moment' not in current_source:
-                        print("  ✓ Cloudflare challenge passed automatically")
-                        return True
-                    time.sleep(2)
-
-                print("  ⚠️  Cloudflare challenge timeout")
-                return False
-
-            except Exception as e:
-                print(f"  ⚠️  Error handling Cloudflare challenge: {type(e).__name__}")
-                self.driver.switch_to.default_content()
-                return False
-
-        except Exception as e:
-            print(f"  ⚠️  Unexpected error in Cloudflare handler: {type(e).__name__}")
-            return False
-
-    def find_pdf_download_link(self, ssrn_url: str) -> Optional[str]:
+    def download_pdf(self, ssrn_url: str, doi: str) -> Dict:
+        """Download one paper. Returns a result dict with a ``status`` field:
+        ``downloaded`` | ``skipped`` | ``unavailable`` | ``failed``.
         """
-        Navigate to SSRN paper page and find the PDF download link
+        result = {
+            "doi": doi,
+            "ssrn_url": ssrn_url,
+            "filepath": None,
+            "success": False,
+            "status": "failed",
+            "error": None,
+        }
 
-        Args:
-            ssrn_url: SSRN paper URL
-
-        Returns:
-            Direct PDF download URL or None if not found
-        """
-        try:
-            print(f"  → Navigating to: {ssrn_url}")
-            self.driver.get(ssrn_url)
-
-            # Handle Cloudflare challenge if present
-            if not self.handle_cloudflare_challenge():
-                print(f"  ✗ Failed to pass Cloudflare challenge")
-                return None
-
-            # Accept cookies on first visit
-            self.accept_cookies(self.page_timeout)
-
-            # Wait for page to load
-            time.sleep(2)
-
-            # Look for download links using various selectors
-            download_selectors = [
-                # Common SSRN download link patterns
-                "a[href*='Delivery.cfm']",
-                "a[href*='download']",
-                "a[href*='pdf']",  # Fixed: CSS syntax instead of XPath
-                ".download-button",
-                ".btn-download",
-                "button[data-action='download']",
-                # More general patterns
-                "a[href*='.pdf']",
-                "a[title*='Download']",
-                "a[aria-label*='Download']"
-            ]
-
-            for selector in download_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        for element in elements:
-                            href = element.get_attribute('href')
-                            if href and ('pdf' in href.lower() or 'delivery.cfm' in href.lower()):
-                                print(f"  ✓ Found download link: {href}")
-                                return href
-                except:
-                    continue
-
-            # If no direct download link found, try to find any clickable download elements
-            download_text_patterns = [
-                "download",
-                "pdf",
-                "full text",
-                "view pdf"
-            ]
-
-            for pattern in download_text_patterns:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]")
-                    if elements:
-                        element = elements[0]
-                        href = element.get_attribute('href')
-                        if href:
-                            print(f"  ✓ Found download link by text '{pattern}': {href}")
-                            return href
-                except:
-                    continue
-
-            print(f"  ✗ No download link found on {ssrn_url}")
-            return None
-
-        except Exception as e:
-            print(f"  ✗ Error finding download link: {type(e).__name__}: {str(e)}")
-            return None
-
-    def download_pdf_via_click(self, ssrn_url: str) -> Optional[str]:
-        """
-        Download PDF by clicking download button/link on SSRN page
-
-        Args:
-            ssrn_url: SSRN paper URL
-
-        Returns:
-            Downloaded filename or None if failed
-        """
-        try:
-            print(f"  → Navigating to: {ssrn_url}")
-            self.driver.get(ssrn_url)
-
-            # Handle Cloudflare challenge if present
-            if not self.handle_cloudflare_challenge():
-                print(f"  ✗ Failed to pass Cloudflare challenge")
-                return None
-
-            # Accept cookies
-            self.accept_cookies(self.page_timeout)
-            time.sleep(2)
-
-            # Clear temp download directory
-            for file in self.temp_download_dir.glob("*"):
-                if file.is_file():
-                    file.unlink()
-
-            # Look for clickable download elements
-            download_selectors = [
-                "a[href*='Delivery.cfm']",
-                "a[href*='download']",
-                ".download-button",
-                ".btn-download",
-                "button[data-action='download']"
-            ]
-
-            download_element = None
-            for selector in download_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        download_element = elements[0]
-                        break
-                except:
-                    continue
-
-            if not download_element:
-                # Try by text content
-                download_text_patterns = ["download", "pdf", "full text"]
-                for pattern in download_text_patterns:
-                    try:
-                        elements = self.driver.find_elements(By.XPATH, f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]")
-                        if elements:
-                            download_element = elements[0]
-                            break
-                    except:
-                        continue
-
-            if not download_element:
-                print(f"  ✗ No clickable download element found")
-                return None
-
-            print(f"  → Clicking download element...")
-            download_element.click()
-
-            # Wait for download to complete
-            print(f"  → Waiting for download to complete (max {self.download_timeout}s)...")
-            start_time = time.time()
-
-            while time.time() - start_time < self.download_timeout:
-                # Check for downloaded files
-                pdf_files = list(self.temp_download_dir.glob("*.pdf"))
-                if pdf_files:
-                    # Found a PDF file
-                    downloaded_file = pdf_files[0]
-                    print(f"  ✓ Download completed: {downloaded_file.name}")
-                    return str(downloaded_file)
-
-                # Check for partial downloads (Chrome creates .crdownload files)
-                partial_files = list(self.temp_download_dir.glob("*.crdownload"))
-                if partial_files:
-                    print(f"  → Download in progress...")
-
-                time.sleep(1)
-
-            print(f"  ✗ Download timeout after {self.download_timeout}s")
-            return None
-
-        except Exception as e:
-            print(f"  ✗ Error downloading via click: {type(e).__name__}: {str(e)}")
-            return None
-
-    def download_pdf(self, ssrn_url: str, doi: str) -> Optional[Path]:
-        """
-        Download a PDF from SSRN using browser automation
-
-        Args:
-            ssrn_url: SSRN paper URL
-            doi: DOI for filename
-
-        Returns:
-            Path to downloaded file or None if failed
-        """
         if not ssrn_url:
-            print(f"  ✗ No SSRN URL provided for {doi}")
-            return None
+            result["error"] = "No SSRN URL"
+            return result
 
-        # Create safe filename from DOI
-        safe_filename = doi.replace('/', '_').replace('\\', '_')
+        safe_filename = doi.replace("/", "_").replace("\\", "_")
         final_filepath = self.storage_dir / f"{safe_filename}.pdf"
-
-        # Skip if already exists
         if final_filepath.exists():
             print(f"✓ Already exists: {safe_filename}.pdf")
-            return final_filepath
+            result.update(success=True, status="skipped", filepath=str(final_filepath))
+            return result
 
         try:
-            # Try clicking download on the page
-            temp_file = self.download_pdf_via_click(ssrn_url)
+            print(f"  → {ssrn_url}")
+            self.driver.get(ssrn_url)
 
-            if temp_file and Path(temp_file).exists():
-                # Move file to final location
-                shutil.move(temp_file, final_filepath)
-                print(f"✓ Downloaded: {safe_filename}.pdf")
+            if not self.wait_for_cloudflare():
+                result["error"] = "Cloudflare challenge did not clear"
+                return result
 
-                # Respect rate limiting
-                time.sleep(self.delay)
+            self.accept_cookies()
+            time.sleep(1)
 
-                return final_filepath
-            else:
-                print(f"✗ Failed to download PDF for {doi}")
-                return None
+            button, available = self._find_download_button()
+            if available is False:
+                print("  – Not available for download")
+                result["status"] = "unavailable"
+                result["error"] = "Not available for download"
+                return result
+            if button is None:
+                result["error"] = "No download button found"
+                return result
 
+            # Clear stale temp files so we can detect the new download
+            for f in self.temp_download_dir.glob("*"):
+                if f.is_file():
+                    f.unlink()
+
+            handles_before = len(self.driver.window_handles)
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", button)
+            time.sleep(0.5)
+            self.driver.execute_script("arguments[0].click();", button)
+
+            temp_file = self._wait_for_download(handles_before)
+            if not temp_file:
+                result["error"] = "Download did not complete"
+                return result
+
+            if not self._looks_like_pdf(temp_file):
+                result["error"] = "Downloaded file is not a valid PDF"
+                Path(temp_file).unlink(missing_ok=True)
+                return result
+
+            shutil.move(temp_file, final_filepath)
+            print(f"✓ Downloaded: {safe_filename}.pdf")
+            result.update(success=True, status="downloaded", filepath=str(final_filepath))
+            return result
+
+        except WebDriverException as e:
+            # Surface so the batch loop can restart the browser
+            result["error"] = f"{type(e).__name__}: {e}"
+            raise
         except Exception as e:
-            print(f"✗ Error downloading {doi}: {type(e).__name__}: {str(e)}")
-            return None
+            result["error"] = f"{type(e).__name__}: {e}"
+            return result
 
-    def download_batch(self, pdf_list: List[Dict], show_progress: bool = True) -> List[Dict]:
-        """
-        Download multiple PDFs using browser automation
+    def _wait_for_download(self, handles_before: int) -> Optional[str]:
+        """Wait for a completed .pdf to appear in the temp dir."""
+        deadline = time.time() + self.download_timeout
+        while time.time() < deadline:
+            time.sleep(2)
+            # Some papers open the PDF in a new tab before downloading
+            if len(self.driver.window_handles) > handles_before:
+                self.driver.switch_to.window(self.driver.window_handles[-1])
+            if list(self.temp_download_dir.glob("*.crdownload")):
+                continue  # still downloading
+            pdfs = list(self.temp_download_dir.glob("*.pdf"))
+            if pdfs:
+                return str(pdfs[0])
+        return None
+
+    @staticmethod
+    def _looks_like_pdf(path: str) -> bool:
+        try:
+            with open(path, "rb") as f:
+                return f.read(5) == b"%PDF-"
+        except OSError:
+            return False
+
+    # ── Batch ──────────────────────────────────────────────────────────────
+
+    def download_batch(
+        self,
+        pdf_list: List[Dict],
+        show_progress: bool = True,
+        on_result: Optional[Callable[[Dict], None]] = None,
+    ) -> List[Dict]:
+        """Download multiple PDFs in one browser session.
 
         Args:
-            pdf_list: List of dicts with 'doi' and 'ssrn_url' keys
-            show_progress: Show overall progress bar
-
-        Returns:
-            List of results with success/failure info
+            pdf_list: dicts with ``doi`` and ``ssrn_url`` keys
+            show_progress: show a tqdm progress bar
+            on_result: optional callback invoked after each paper with its
+                result dict. Use this to persist progress incrementally so an
+                interrupted overnight run loses at most one paper.
         """
         results = []
-
-        # Setup webdriver
         self.setup_webdriver()
 
         try:
-            iterator = tqdm(pdf_list, desc="Downloading PDFs (Selenium)") if show_progress else pdf_list
+            iterator = tqdm(pdf_list, desc="Downloading PDFs") if show_progress else pdf_list
+            since_restart = 0
 
-            for item in iterator:
-                doi = item['doi']
-                ssrn_url = item.get('ssrn_url')
+            for item in pdf_list if not show_progress else iterator:
+                doi = item["doi"]
+                ssrn_url = item.get("ssrn_url")
+                (tqdm.write if show_progress else print)(f"\nDownloading: {doi}")
 
-                if show_progress:
-                    tqdm.write(f"\nDownloading: {doi}")
-                else:
-                    print(f"\nDownloading: {doi}")
+                try:
+                    result = self.download_pdf(ssrn_url, doi)
+                except WebDriverException as e:
+                    # Browser died; rebuild it and record this one as failed
+                    print(f"  ⚠️  Browser error ({type(e).__name__}); restarting browser")
+                    self.quit()
+                    self.setup_webdriver()
+                    since_restart = 0
+                    result = {
+                        "doi": doi,
+                        "ssrn_url": ssrn_url,
+                        "filepath": None,
+                        "success": False,
+                        "status": "failed",
+                        "error": str(e),
+                    }
 
-                filepath = self.download_pdf(ssrn_url, doi)
+                results.append(result)
+                if on_result:
+                    on_result(result)
 
-                results.append({
-                    'doi': doi,
-                    'ssrn_url': ssrn_url,
-                    'filepath': str(filepath) if filepath else None,
-                    'success': filepath is not None
-                })
+                # Polite, jittered delay between papers
+                if self.delay > 0:
+                    time.sleep(random.uniform(self.delay * 0.6, self.delay * 1.4))
 
+                # Periodically recycle the browser on long runs
+                since_restart += 1
+                if self.restart_every and since_restart >= self.restart_every:
+                    print(f"  ↻ Recycling browser after {since_restart} papers")
+                    self.quit()
+                    self.setup_webdriver()
+                    since_restart = 0
         finally:
-            # Clean up
-            if self.driver:
-                self.driver.quit()
-
-            # Clean up temp directory
+            self.quit()
             try:
                 if self.temp_download_dir.exists():
                     shutil.rmtree(self.temp_download_dir)
-            except:
+            except Exception:
                 pass
 
-        # Summary
-        successful = sum(1 for r in results if r['success'])
-        print(f"\n✓ Downloaded {successful}/{len(pdf_list)} PDFs using Selenium")
-
-        if successful < len(pdf_list):
-            failed = len(pdf_list) - successful
-            print(f"⚠️  {failed} PDFs failed to download")
-            print("   This may be due to:")
-            print("   - Papers not available for download")
-            print("   - Changed SSRN page structure")
-            print("   - Network issues or timeouts")
-
+        self._print_summary(results)
         return results
 
+    @staticmethod
+    def _print_summary(results: List[Dict]):
+        by_status = {}
+        for r in results:
+            by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+        downloaded = by_status.get("downloaded", 0)
+        skipped = by_status.get("skipped", 0)
+        unavailable = by_status.get("unavailable", 0)
+        failed = by_status.get("failed", 0)
+        print(
+            f"\n✓ {downloaded} downloaded, {skipped} already present, "
+            f"{unavailable} not available, {failed} failed (of {len(results)})"
+        )
+
     def __del__(self):
-        """Cleanup when object is destroyed"""
-        if hasattr(self, 'driver') and self.driver:
-            try:
-                self.driver.quit()
-            except:
-                pass
+        self.quit()

@@ -1,6 +1,7 @@
 """Command-line interface for cite-hustle"""
 
 import asyncio
+import sys
 from pathlib import Path
 
 import click
@@ -8,14 +9,19 @@ import click
 from cite_hustle.collectors.journals import JournalRegistry
 from cite_hustle.collectors.metadata import MetadataCollector
 from cite_hustle.collectors.openalex_enricher import OpenAlexEnricher
-
-# TOFIXME: Temporarily disable due to Cloudflare issues
-# from cite_hustle.collectors.pdf_downloader import PDFDownloader
 from cite_hustle.collectors.selenium_pdf_downloader import SeleniumPDFDownloader
 from cite_hustle.collectors.ssrn_scraper import SSRNScraper
 from cite_hustle.config import settings
 from cite_hustle.database.models import DatabaseManager
 from cite_hustle.database.repository import ArticleRepository
+
+
+# Commands that only read the database. These open it read-only so they can run
+# alongside other readers (e.g. the rainer MCP server) without a lock conflict.
+READ_ONLY_COMMANDS = {"status", "dashboard", "journals", "search", "sample"}
+
+# Seconds a write command waits for another process to release the DB file.
+WRITE_LOCK_WAIT_SECONDS = 120
 
 
 @click.group()
@@ -26,12 +32,19 @@ def main(ctx):
 
     A tool to automate the collection of academic papers from top journals.
     """
-    # Initialize database connection
-    db_manager = DatabaseManager(settings.db_path)
-    db_manager.connect()
-
-    # Store in context for subcommands
     ctx.ensure_object(dict)
+
+    # Help text and bare invocation don't touch the database.
+    if ctx.invoked_subcommand is None or "--help" in sys.argv or "-h" in sys.argv:
+        return
+
+    read_only = ctx.invoked_subcommand in READ_ONLY_COMMANDS
+    db_manager = DatabaseManager(settings.db_path)
+    db_manager.connect(
+        read_only=read_only,
+        max_wait=0 if read_only else WRITE_LOCK_WAIT_SECONDS,
+    )
+
     ctx.obj["db"] = db_manager
     ctx.obj["repo"] = ArticleRepository(db_manager)
 
@@ -58,7 +71,7 @@ def init(ctx):
 @main.command()
 @click.option(
     "--field",
-    type=click.Choice(["accounting", "finance", "economics", "all"]),
+    type=click.Choice(["accounting", "finance", "economics", "management", "all"]),
     default="all",
     help="Research field",
 )
@@ -78,7 +91,7 @@ def journals(field):
 @main.command()
 @click.option(
     "--field",
-    type=click.Choice(["accounting", "finance", "economics", "all"]),
+    type=click.Choice(["accounting", "finance", "economics", "management", "all"]),
     default="all",
     help="Research field to collect",
 )
@@ -348,121 +361,91 @@ def enrich_openalex(
 
 
 @main.command()
-@click.option("--limit", default=None, type=int, help="Limit number of PDFs to download")
-@click.option("--delay", default=2, type=int, help="Delay between downloads (seconds)")
+@click.option("--limit", default=None, type=int, help="Limit number of PDFs (default: all pending)")
 @click.option(
-    "--use-selenium", is_flag=True, help="Use Selenium browser automation (bypasses Cloudflare)"
+    "--delay", default=3, type=int, help="Base delay between downloads in seconds (jittered)"
 )
 @click.option(
-    "--headless/--no-headless", default=True, help="Run browser in headless mode (Selenium only)"
+    "--headless/--no-headless",
+    default=False,
+    help="Run browser headless. NOTE: headless is blocked by SSRN's Cloudflare; leave it off.",
+)
+@click.option(
+    "--use-selenium/--no-use-selenium",
+    default=True,
+    help="Deprecated: SSRN downloads always use the browser path.",
+)
+@click.option(
+    "--retry-unavailable",
+    is_flag=True,
+    help="Also re-try papers previously marked 'not available for download'.",
 )
 @click.pass_context
-def download(ctx, limit, delay, use_selenium, headless):
+def download(ctx, limit, delay, headless, use_selenium, retry_unavailable):
     """
-    Download PDFs from SSRN
+    Download SSRN PDFs into the storage directory.
 
-    This command downloads PDFs for articles where SSRN URLs are available.
-    Due to Cloudflare protection, direct HTTP downloads usually fail.
-    Use --use-selenium for browser automation that can bypass protection.
+    Uses a visible Chrome browser (undetected-chromedriver) to pass SSRN's
+    Cloudflare protection, then clicks the paper's download button. Papers with
+    no posted full text are marked unavailable and skipped on later runs.
+
+    Progress is saved after every paper, so the run resumes where it left off
+    and is safe to leave running unattended (e.g. overnight):
+
+        caffeinate -i poetry run cite-hustle download   # macOS: prevent sleep
 
     Examples:
-        cite-hustle download --limit 10 --use-selenium
-        cite-hustle download --use-selenium --no-headless  # Show browser
-        cite-hustle download --delay 5 --use-selenium
+        cite-hustle download                      # all pending papers
+        cite-hustle download --limit 50
+        cite-hustle download --no-headless --limit 5   # watch the browser
     """
     repo = ctx.obj["repo"]
 
-    # Get articles with SSRN URLs for download
-    if use_selenium:
-        # For Selenium, we need articles with SSRN URLs (not necessarily PDF URLs)
-        articles = repo.get_articles_with_ssrn_urls(limit=limit, downloaded=False)
-        if articles.empty:
-            click.echo("✓ No articles with SSRN URLs available for download")
-            return
-    else:
-        # For HTTP, we need articles with PDF URLs
-        pending = repo.get_pending_pdf_downloads(limit=limit)
-        if pending.empty:
-            click.echo("✓ No PDFs pending download")
-            return
-        articles = pending
-
-    download_method = "Selenium browser automation" if use_selenium else "HTTP requests"
-    click.echo(f"\n📄 Downloading {len(articles)} PDFs using {download_method}")
-    click.echo(f"Storage: {settings.pdf_storage_dir}")
-    click.echo(f"Delay: {delay} seconds")
-    if use_selenium:
-        click.echo(f"Browser mode: {'Headless' if headless else 'Visible'}")
-    click.echo()
-
     if not use_selenium:
-        # Show warning about Cloudflare protection
-        click.echo(
-            "⚠️  Note: Direct HTTP downloads usually fail due to SSRN's Cloudflare protection."
-        )
-        click.echo("   Consider using --use-selenium for better success rates.\n")
+        click.echo("ℹ️  The HTTP download path was removed; using the browser downloader.\n")
 
-    # Initialize appropriate downloader
-    if use_selenium:
-        from cite_hustle.collectors.selenium_pdf_downloader import SeleniumPDFDownloader
-
-        downloader = SeleniumPDFDownloader(
-            storage_dir=settings.pdf_storage_dir, delay=delay, headless=headless
-        )
-
-        # Prepare download list for Selenium (uses SSRN URLs)
-        download_list = [
-            {"doi": row["doi"], "ssrn_url": row["ssrn_url"]}
-            for _, row in articles.iterrows()
-            if row.get("ssrn_url")
-        ]
-    else:
-        downloader = PDFDownloader(settings.pdf_storage_dir, delay=delay)
-
-        # Prepare download list with PDF URLs (HTTP downloader will construct from SSRN URLs)
-        download_list = [
-            {
-                "url": row.get("pdf_url"),  # May be None
-                "doi": row["doi"],
-                "ssrn_url": row["ssrn_url"],  # Use this to construct PDF URL
-            }
-            for _, row in articles.iterrows()
-        ]
-
-    if not download_list:
-        click.echo("✗ No valid articles found for download")
+    articles = repo.get_articles_with_ssrn_urls(
+        limit=limit, downloaded=False, include_unavailable=retry_unavailable
+    )
+    if articles.empty:
+        click.echo("✓ No papers pending PDF download")
         return
 
-    # Download PDFs
-    results = downloader.download_batch(download_list)
+    download_list = [
+        {"doi": row["doi"], "ssrn_url": row["ssrn_url"]}
+        for _, row in articles.iterrows()
+        if row.get("ssrn_url")
+    ]
+    if not download_list:
+        click.echo("✗ No valid SSRN URLs found")
+        return
 
-    # Update database with results
-    for result in results:
+    click.echo(f"📄 Downloading {len(download_list)} PDFs from SSRN")
+    click.echo(f"Storage: {settings.pdf_storage_dir}")
+    click.echo(
+        f"Browser: {'Headless (not recommended)' if headless else 'Visible'} | "
+        f"base delay: {delay}s\n"
+    )
+
+    downloader = SeleniumPDFDownloader(
+        storage_dir=settings.pdf_storage_dir, delay=delay, headless=headless
+    )
+
+    def persist(result):
+        """Update the DB after each paper so progress survives interruptions."""
+        doi = result["doi"]
         if result["success"]:
-            # For HTTP downloader, construct PDF URL from SSRN URL
-            if not use_selenium and hasattr(downloader, "construct_pdf_url"):
-                pdf_url = (
-                    downloader.construct_pdf_url(result.get("ssrn_url"))
-                    if result.get("ssrn_url")
-                    else None
-                )
-            else:
-                pdf_url = None  # Selenium doesn't provide direct PDF URLs
-
             repo.update_pdf_info(
-                doi=result["doi"],
-                pdf_url=pdf_url,
-                pdf_file_path=result["filepath"],
-                downloaded=True,
+                doi=doi, pdf_url=None, pdf_file_path=result.get("filepath"), downloaded=True
             )
-            repo.log_processing(result["doi"], "download_pdf", "success")
+            repo.log_processing(doi, "download_pdf", "success")
+        elif result["status"] == "unavailable":
+            repo.mark_pdf_unavailable(doi)
         else:
-            error_message = "Download failed" + (
-                " (Cloudflare blocked)" if not use_selenium else ""
-            )
-            repo.log_processing(result["doi"], "download_pdf", "failed", error_message)
+            repo.log_processing(doi, "download_pdf", "failed", result.get("error"))
 
-    click.echo(f"\n✓ Download process complete")
+    downloader.download_batch(download_list, on_result=persist)
+    click.echo("\n✓ Download process complete")
 
 
 @main.command()
