@@ -457,6 +457,55 @@ def download(ctx, limit, delay, headless, use_selenium, retry_unavailable):
     click.echo("\n✓ Download process complete")
 
 
+@main.command("verify-pdfs")
+@click.option("--limit", default=None, type=int, help="Limit number of PDFs to verify")
+@click.option("--model", default=None, help="Ollama model for gray-zone cases")
+@click.option("--no-llm", is_flag=True, help="Deterministic checks only (no LLM calls)")
+@click.option("--rerun-uncertain", is_flag=True, help="Also re-check uncertain/unreadable PDFs")
+@click.pass_context
+def verify_pdfs(ctx, limit, model, no_llm, rerun_uncertain):
+    """
+    Verify downloaded PDFs against article metadata (title + authors).
+
+    Deterministic fuzzy matching first; only ambiguous cases go to a small
+    Ollama Cloud model. Mismatched PDFs are moved to pdfs/quarantine/ and the
+    article becomes eligible for re-scraping or fallback resolution.
+    """
+    import os
+
+    from cite_hustle.verifier import PDFVerifier
+
+    repo = ctx.obj["repo"]
+
+    statuses = ("pending", "uncertain", "unreadable") if rerun_uncertain else ("pending",)
+    pending = repo.get_pdfs_pending_verification(limit=limit, statuses=statuses)
+    if pending.empty:
+        click.echo("✓ No PDFs pending verification")
+        return
+
+    use_llm = not no_llm
+    if use_llm and not os.environ.get("OLLAMA_API_KEY"):
+        click.echo("⚠️  OLLAMA_API_KEY not set; gray-zone PDFs will be left uncertain")
+
+    verifier = PDFVerifier(
+        repo=repo,
+        quarantine_dir=settings.quarantine_dir,
+        model=model or settings.pdf_verifier_model,
+        gray_low=settings.verify_gray_zone_low,
+        gray_high=settings.verify_gray_zone_high,
+        use_llm=use_llm,
+    )
+
+    click.echo(f"🔍 Verifying {len(pending)} PDFs against article metadata\n")
+    counts = verifier.verify_batch(pending)
+
+    click.echo(
+        f"\n✓ Verification complete: {counts['match']} match, "
+        f"{counts['mismatch']} mismatch (quarantined), "
+        f"{counts['uncertain']} uncertain, {counts['unreadable']} unreadable"
+    )
+
+
 @main.command()
 @click.option("--top-journals", default=10, type=int, help="Number of top journals to show")
 @click.option("--recent", default=10, type=int, help="Recent processing entries to show")

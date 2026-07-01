@@ -180,6 +180,13 @@ class ArticleRepository:
             [pdf_url, pdf_file_path, downloaded, doi],
         )
 
+    def reset_ssrn_download(self, doi: str):
+        """Clear the SSRN download flags so a paper becomes pending again."""
+        self.conn.execute(
+            "UPDATE ssrn_pages SET pdf_downloaded = FALSE, pdf_file_path = NULL WHERE doi = ?",
+            [doi],
+        )
+
     def get_pending_ssrn_scrapes(self, limit: Optional[int] = None) -> pd.DataFrame:
         """Get articles that need SSRN scraping"""
         query = """

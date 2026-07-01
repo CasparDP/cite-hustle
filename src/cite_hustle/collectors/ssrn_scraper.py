@@ -14,6 +14,7 @@ from rapidfuzz import fuzz
 from tqdm import tqdm
 
 from cite_hustle.config import settings
+from cite_hustle.matching import combined_similarity
 from cite_hustle.database.repository import ArticleRepository
 
 
@@ -418,28 +419,7 @@ class SSRNScraper:
         Returns:
             Combined similarity score (0-100)
         """
-        # Fuzzy match score
-        fuzzy_score = fuzz.partial_ratio(db_title.lower(), result_title.lower())
-
-        # Length similarity score
-        db_words = len(db_title.split())
-        result_words = len(result_title.split())
-
-        if db_words == 0 or result_words == 0:
-            length_score = 0
-        else:
-            # Calculate word count ratio (closer to 1.0 is better)
-            word_ratio = min(db_words, result_words) / max(db_words, result_words)
-            length_score = word_ratio * 100
-
-        # Combined score: weighted average
-        # Default: 70% fuzzy match + 30% length similarity
-        combined_score = (
-            (1 - self.length_similarity_weight) * fuzzy_score +
-            self.length_similarity_weight * length_score
-        )
-
-        return combined_score
+        return combined_similarity(db_title, result_title, self.length_similarity_weight)
 
     def search_ssrn_and_extract_urls(self, title: str, timeout: int = 10) -> Tuple[bool, Optional[str], List[Tuple[str, str, str]]]:
         """
