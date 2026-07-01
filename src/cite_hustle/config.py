@@ -48,7 +48,29 @@ class Settings(BaseSettings):
         path = self.dropbox_base / "metadata"
         path.mkdir(parents=True, exist_ok=True)
         return path
-    
+
+    @property
+    def wiki_dir(self) -> Path:
+        """Research wiki root (process-paper compatible layout)"""
+        path = self.dropbox_base / "wiki"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def quarantine_dir(self) -> Path:
+        """Quarantine for PDFs that failed metadata verification"""
+        path = self.dropbox_base / "pdfs" / "quarantine"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def reports_dir(self) -> Path:
+        """Pipeline run reports (markdown, synced via Dropbox)"""
+        path = self.dropbox_base / "reports"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
     # API Settings
     # Optional CrossRef "polite pool" / OpenAlex mailto; set via CITE_HUSTLE_CROSSREF_EMAIL.
     crossref_email: str = ""
@@ -62,6 +84,17 @@ class Settings(BaseSettings):
     # DuckDB Settings
     duckdb_memory_limit: str = "4GB"
     duckdb_threads: int = 4
+
+    # Wiki ingestion (process-paper bridge)
+    process_paper_dir: Path = Path.home() / "Github" / "dot-files" / "claude" / "skills" / "process-paper"
+    analyst_model: str = "kimi-k2.6:cloud"
+    wiki_verifier_model: str = "gpt-oss:20b:cloud"
+    wiki_ingest_batch: int = 10
+
+    # PDF-metadata verification
+    pdf_verifier_model: str = "gpt-oss:20b:cloud"
+    verify_gray_zone_low: int = 55
+    verify_gray_zone_high: int = 88
     
     class Config:
         env_file = ".env"

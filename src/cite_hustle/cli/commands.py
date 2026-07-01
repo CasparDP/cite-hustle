@@ -431,12 +431,21 @@ def download(ctx, limit, delay, headless, use_selenium, retry_unavailable):
         storage_dir=settings.pdf_storage_dir, delay=delay, headless=headless
     )
 
+    ssrn_urls = {item["doi"]: item["ssrn_url"] for item in download_list}
+
     def persist(result):
         """Update the DB after each paper so progress survives interruptions."""
         doi = result["doi"]
         if result["success"]:
             repo.update_pdf_info(
                 doi=doi, pdf_url=None, pdf_file_path=result.get("filepath"), downloaded=True
+            )
+            repo.upsert_pdf_file(
+                doi=doi,
+                source="ssrn",
+                source_url=ssrn_urls.get(doi),
+                pdf_url=None,
+                pdf_file_path=result.get("filepath"),
             )
             repo.log_processing(doi, "download_pdf", "success")
         elif result["status"] == "unavailable":

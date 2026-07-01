@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from cite_hustle.database.models import DatabaseManager
+from cite_hustle.paths import to_portable
 
 
 class ArticleRepository:
@@ -165,7 +166,9 @@ class ArticleRepository:
     def update_pdf_info(
         self, doi: str, pdf_url: str, pdf_file_path: Optional[str] = None, downloaded: bool = False
     ):
-        """Update PDF download information"""
+        """Update PDF download information (path stored in portable $HOME form)"""
+        if pdf_file_path:
+            pdf_file_path = to_portable(pdf_file_path)
         self.conn.execute(
             """
             UPDATE ssrn_pages
@@ -271,6 +274,260 @@ class ArticleRepository:
             ]
             return dict(zip(columns, result))
         return None
+
+    # PDF files (any source: ssrn/nber/arxiv/oa)
+    def upsert_pdf_file(
+        self,
+        doi: str,
+        source: str,
+        source_url: Optional[str],
+        pdf_url: Optional[str],
+        pdf_file_path: str,
+        match_score: Optional[float] = None,
+    ):
+        """Record the current PDF on disk for an article; resets verification state.
+
+        The stored path is normalized to the $HOME/... portable convention.
+        """
+        pdf_file_path = to_portable(pdf_file_path)
+        self.conn.execute(
+            """
+            INSERT INTO pdf_files (doi, source, source_url, pdf_url, pdf_file_path, match_score)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (doi) DO UPDATE SET
+                source = EXCLUDED.source,
+                source_url = EXCLUDED.source_url,
+                pdf_url = EXCLUDED.pdf_url,
+                pdf_file_path = EXCLUDED.pdf_file_path,
+                match_score = EXCLUDED.match_score,
+                downloaded_at = now(),
+                verify_status = 'pending',
+                verify_method = NULL,
+                verify_score = NULL,
+                verify_model = NULL,
+                verify_reason = NULL,
+                verified_at = NULL
+        """,
+            [doi, source, source_url, pdf_url, pdf_file_path, match_score],
+        )
+
+    def delete_pdf_file(self, doi: str):
+        """Remove the pdf_files row (e.g. after quarantining a mismatched PDF)."""
+        self.conn.execute("DELETE FROM pdf_files WHERE doi = ?", [doi])
+
+    def get_pdfs_pending_verification(
+        self, limit: Optional[int] = None, statuses: tuple = ("pending",)
+    ) -> pd.DataFrame:
+        """Get PDFs awaiting metadata verification, joined with article metadata."""
+        placeholders = ", ".join("?" for _ in statuses)
+        query = f"""
+            SELECT p.doi, p.source, p.source_url, p.pdf_file_path,
+                   a.title, a.authors, a.year, a.journal_name
+            FROM pdf_files p
+            JOIN articles a ON p.doi = a.doi
+            WHERE p.verify_status IN ({placeholders})
+            ORDER BY p.downloaded_at
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query, list(statuses)).fetchdf()
+
+    def set_pdf_verification(
+        self,
+        doi: str,
+        status: str,
+        method: Optional[str] = None,
+        score: Optional[float] = None,
+        model: Optional[str] = None,
+        reason: Optional[str] = None,
+    ):
+        """Store the verification verdict for a downloaded PDF."""
+        self.conn.execute(
+            """
+            UPDATE pdf_files
+            SET verify_status = ?,
+                verify_method = ?,
+                verify_score = ?,
+                verify_model = ?,
+                verify_reason = ?,
+                verified_at = now()
+            WHERE doi = ?
+        """,
+            [status, method, score, model, reason, doi],
+        )
+
+    def get_articles_without_pdf(self, limit: Optional[int] = None) -> pd.DataFrame:
+        """Get articles that have no PDF on disk from any source."""
+        query = """
+            SELECT a.doi, a.title, a.authors, a.year, a.journal_name
+            FROM articles a
+            LEFT JOIN pdf_files p ON a.doi = p.doi
+            WHERE p.doi IS NULL
+            ORDER BY a.year DESC
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query).fetchdf()
+
+    def get_recent_candidate_checks(self, cutoff) -> set:
+        """Get (doi, source) pairs already checked since cutoff (datetime)."""
+        rows = self.conn.execute(
+            "SELECT doi, source FROM pdf_candidates WHERE checked_at >= ?", [cutoff]
+        ).fetchall()
+        return set(rows)
+
+    def record_pdf_candidate(
+        self,
+        doi: str,
+        source: str,
+        candidate_url: Optional[str] = None,
+        pdf_url: Optional[str] = None,
+        match_score: Optional[float] = None,
+        status: str = "no_match",
+        error_message: Optional[str] = None,
+    ):
+        """Memoize a fallback-resolution attempt so reruns skip known misses."""
+        self.conn.execute(
+            """
+            INSERT INTO pdf_candidates
+            (doi, source, candidate_url, pdf_url, match_score, status, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (doi, source) DO UPDATE SET
+                candidate_url = EXCLUDED.candidate_url,
+                pdf_url = EXCLUDED.pdf_url,
+                match_score = EXCLUDED.match_score,
+                status = EXCLUDED.status,
+                error_message = EXCLUDED.error_message,
+                checked_at = now()
+        """,
+            [doi, source, candidate_url, pdf_url, match_score, status, error_message],
+        )
+
+    # Wiki pages
+    def get_verified_pdfs_not_ingested(self, limit: Optional[int] = None) -> pd.DataFrame:
+        """Get verified PDFs not yet ingested into the wiki (pending/failed are retried)."""
+        query = """
+            SELECT p.doi, p.pdf_file_path, a.title, a.authors, a.year, a.journal_name
+            FROM pdf_files p
+            JOIN articles a ON p.doi = a.doi
+            WHERE p.verify_status = 'match'
+              AND NOT EXISTS (
+                  SELECT 1 FROM wiki_pages w
+                  WHERE w.doi = p.doi AND w.status IN ('ingested', 'flagged')
+              )
+            ORDER BY a.year DESC
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query).fetchdf()
+
+    def upsert_wiki_page(
+        self,
+        doi: str,
+        bib_key: str,
+        source_page_path: Optional[str] = None,
+        extraction_depth: Optional[str] = None,
+        analyst_model: Optional[str] = None,
+        verifier_model: Optional[str] = None,
+        status: str = "pending",
+        error_message: Optional[str] = None,
+    ):
+        """Insert or update wiki ingestion state for an article."""
+        self.conn.execute(
+            """
+            INSERT INTO wiki_pages
+            (doi, bib_key, source_page_path, extraction_depth, analyst_model,
+             verifier_model, status, error_message, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? IN ('ingested', 'flagged') THEN now() ELSE NULL END)
+            ON CONFLICT (doi) DO UPDATE SET
+                bib_key = EXCLUDED.bib_key,
+                source_page_path = EXCLUDED.source_page_path,
+                extraction_depth = EXCLUDED.extraction_depth,
+                analyst_model = EXCLUDED.analyst_model,
+                verifier_model = EXCLUDED.verifier_model,
+                status = EXCLUDED.status,
+                error_message = EXCLUDED.error_message,
+                ingested_at = EXCLUDED.ingested_at
+        """,
+            [
+                doi,
+                bib_key,
+                source_page_path,
+                extraction_depth,
+                analyst_model,
+                verifier_model,
+                status,
+                error_message,
+                status,
+            ],
+        )
+
+    def get_wiki_page_by_doi(self, doi: str) -> Optional[Dict]:
+        """Get wiki ingestion state for a DOI (for stable bib_keys across runs)."""
+        result = self.conn.execute(
+            "SELECT doi, bib_key, status FROM wiki_pages WHERE doi = ?", [doi]
+        ).fetchone()
+        if result:
+            return dict(zip(["doi", "bib_key", "status"], result))
+        return None
+
+    def get_existing_bib_keys(self) -> set:
+        """Get all bib_keys already assigned."""
+        rows = self.conn.execute("SELECT bib_key FROM wiki_pages").fetchall()
+        return {row[0] for row in rows}
+
+    def get_ingested_wiki_pages(self) -> pd.DataFrame:
+        """Get ingested/flagged wiki pages with article metadata (for index generation)."""
+        return self.conn.execute(
+            """
+            SELECT w.doi, w.bib_key, w.status, a.title, a.authors, a.year, a.journal_name
+            FROM wiki_pages w
+            JOIN articles a ON w.doi = a.doi
+            WHERE w.status IN ('ingested', 'flagged')
+            ORDER BY a.journal_name, a.year DESC, a.title
+        """
+        ).fetchdf()
+
+    # Pipeline runs
+    def start_pipeline_stage(self, run_id: str, stage: str) -> int:
+        """Record the start of a pipeline stage; returns the row id."""
+        result = self.conn.execute(
+            """
+            INSERT INTO pipeline_runs (run_id, stage, status)
+            VALUES (?, ?, 'running')
+            RETURNING id
+        """,
+            [run_id, stage],
+        ).fetchone()
+        return result[0]
+
+    def finish_pipeline_stage(self, stage_id: int, status: str, detail: Optional[str] = None):
+        """Record the outcome of a pipeline stage (detail is a JSON stats blob)."""
+        self.conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = ?, detail = ?, finished_at = now()
+            WHERE id = ?
+        """,
+            [status, detail, stage_id],
+        )
+
+    def get_pipeline_run_stages(self, run_id: str) -> List[Dict]:
+        """Get all stages of a pipeline run (for the run report)."""
+        result = self.conn.execute(
+            """
+            SELECT stage, status, detail, started_at, finished_at
+            FROM pipeline_runs
+            WHERE run_id = ?
+            ORDER BY id
+        """,
+            [run_id],
+        ).fetchall()
+        return [
+            dict(zip(["stage", "status", "detail", "started_at", "finished_at"], row))
+            for row in result
+        ]
 
     # Processing Log
     def log_processing(
@@ -434,6 +691,31 @@ class ArticleRepository:
         stats["pending_pdf_downloads"] = self.conn.execute("""
             SELECT COUNT(*) FROM ssrn_pages
             WHERE pdf_url IS NOT NULL AND (pdf_downloaded = FALSE OR pdf_downloaded IS NULL)
+        """).fetchone()[0]
+
+        # PDFs on disk by source (any-source pipeline)
+        stats["pdfs_by_source"] = dict(
+            self.conn.execute(
+                "SELECT source, COUNT(*) FROM pdf_files GROUP BY source ORDER BY source"
+            ).fetchall()
+        )
+
+        # Verification breakdown
+        stats["pdfs_by_verify_status"] = dict(
+            self.conn.execute(
+                "SELECT verify_status, COUNT(*) FROM pdf_files GROUP BY verify_status"
+            ).fetchall()
+        )
+
+        # Quarantined PDFs (mismatches recorded in processing_log; row removed from pdf_files)
+        stats["pdfs_quarantined"] = self.conn.execute("""
+            SELECT COUNT(DISTINCT doi) FROM processing_log
+            WHERE stage = 'verify_pdf' AND status = 'mismatch'
+        """).fetchone()[0]
+
+        # Wiki ingestion
+        stats["wiki_ingested"] = self.conn.execute("""
+            SELECT COUNT(*) FROM wiki_pages WHERE status IN ('ingested', 'flagged')
         """).fetchone()[0]
 
         return stats

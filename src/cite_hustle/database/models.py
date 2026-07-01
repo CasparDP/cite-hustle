@@ -112,9 +112,76 @@ class DatabaseManager:
             );
         """)
         
+        # Current PDF on disk per DOI, from any source (ssrn/nber/arxiv/oa)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS pdf_files (
+                doi VARCHAR PRIMARY KEY,
+                source VARCHAR NOT NULL,
+                source_url VARCHAR,
+                pdf_url VARCHAR,
+                pdf_file_path VARCHAR NOT NULL,
+                match_score DOUBLE,
+                downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                verify_status VARCHAR DEFAULT 'pending',
+                verify_method VARCHAR,
+                verify_score DOUBLE,
+                verify_model VARCHAR,
+                verify_reason VARCHAR,
+                verified_at TIMESTAMP,
+                FOREIGN KEY (doi) REFERENCES articles(doi)
+            );
+        """)
+
+        # Memo of fallback-resolution attempts so reruns skip known misses
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS pdf_candidates (
+                doi VARCHAR,
+                source VARCHAR,
+                candidate_url VARCHAR,
+                pdf_url VARCHAR,
+                match_score DOUBLE,
+                status VARCHAR,
+                error_message VARCHAR,
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (doi, source)
+            );
+        """)
+
+        # Wiki ingestion state per DOI
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS wiki_pages (
+                doi VARCHAR PRIMARY KEY,
+                bib_key VARCHAR UNIQUE NOT NULL,
+                source_page_path VARCHAR,
+                extraction_depth VARCHAR,
+                analyst_model VARCHAR,
+                verifier_model VARCHAR,
+                status VARCHAR DEFAULT 'pending',
+                error_message VARCHAR,
+                ingested_at TIMESTAMP,
+                FOREIGN KEY (doi) REFERENCES articles(doi)
+            );
+        """)
+
+        # Pipeline run/stage bookkeeping
+        self.conn.execute("""
+            CREATE SEQUENCE IF NOT EXISTS pipeline_runs_seq START 1;
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id INTEGER PRIMARY KEY DEFAULT nextval('pipeline_runs_seq'),
+                run_id VARCHAR,
+                stage VARCHAR,
+                status VARCHAR,
+                detail VARCHAR,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMP
+            );
+        """)
+
         # Create indexes
         self._create_indexes()
-        
+
         print("✓ Database schema initialized")
     
     def _create_indexes(self):
@@ -124,6 +191,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_articles_journal ON articles(journal_issn);",
             "CREATE INDEX IF NOT EXISTS idx_ssrn_downloaded ON ssrn_pages(pdf_downloaded);",
             "CREATE INDEX IF NOT EXISTS idx_processing_log_doi ON processing_log(doi);",
+            "CREATE INDEX IF NOT EXISTS idx_pdf_files_verify ON pdf_files(verify_status);",
+            "CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(status);",
         ]
         
         for idx in indexes:
