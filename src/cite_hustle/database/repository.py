@@ -552,6 +552,23 @@ class ArticleRepository:
             for row in result
         ]
 
+    def get_run_attention_items(self, run_id: str) -> List[Dict]:
+        """Quarantined PDFs and flagged/failed wiki pages since a run started."""
+        result = self.conn.execute(
+            """
+            SELECT doi, stage, status, error_message
+            FROM processing_log
+            WHERE processed_at >= (
+                    SELECT MIN(started_at) FROM pipeline_runs WHERE run_id = ?
+                  )
+              AND ((stage = 'verify_pdf' AND status = 'mismatch')
+                   OR (stage = 'wiki_ingest' AND status IN ('flagged', 'failed')))
+            ORDER BY processed_at
+        """,
+            [run_id],
+        ).fetchall()
+        return [dict(zip(["doi", "stage", "status", "error_message"], row)) for row in result]
+
     # Processing Log
     def log_processing(
         self, doi: str, stage: str, status: str, error_message: Optional[str] = None

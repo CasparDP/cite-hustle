@@ -510,14 +510,16 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
 
     cutoff = datetime.now() - timedelta(days=recheck_days)
     already_checked = repo.get_recent_candidate_checks(cutoff)
-    resolvers = {name: RESOLVERS[name](threshold=settings.similarity_threshold)
-                 for name in source_order}
+    resolvers = {
+        name: RESOLVERS[name](threshold=settings.similarity_threshold) for name in source_order
+    }
 
     click.echo(f"🔎 Resolving {len(articles)} articles via {', '.join(source_order)}\n")
     found, misses = 0, 0
 
-    with httpx.Client(timeout=30.0, headers={"User-Agent": "cite-hustle/0.1"},
-                      follow_redirects=True) as client:
+    with httpx.Client(
+        timeout=30.0, headers={"User-Agent": "cite-hustle/0.1"}, follow_redirects=True
+    ) as client:
         for _, row in articles.iterrows():
             article = row.to_dict()
             doi = article["doi"]
@@ -541,20 +543,30 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
                 success, error = download_pdf(candidate.pdf_url, dest)
                 if not success:
                     repo.record_pdf_candidate(
-                        doi, name, candidate_url=candidate.candidate_url,
-                        pdf_url=candidate.pdf_url, match_score=candidate.match_score,
-                        status="error", error_message=error,
+                        doi,
+                        name,
+                        candidate_url=candidate.candidate_url,
+                        pdf_url=candidate.pdf_url,
+                        match_score=candidate.match_score,
+                        status="error",
+                        error_message=error,
                     )
                     continue
 
                 repo.record_pdf_candidate(
-                    doi, name, candidate_url=candidate.candidate_url,
-                    pdf_url=candidate.pdf_url, match_score=candidate.match_score,
+                    doi,
+                    name,
+                    candidate_url=candidate.candidate_url,
+                    pdf_url=candidate.pdf_url,
+                    match_score=candidate.match_score,
                     status="downloaded",
                 )
                 repo.upsert_pdf_file(
-                    doi=doi, source=name, source_url=candidate.candidate_url,
-                    pdf_url=candidate.pdf_url, pdf_file_path=str(dest),
+                    doi=doi,
+                    source=name,
+                    source_url=candidate.candidate_url,
+                    pdf_url=candidate.pdf_url,
+                    pdf_file_path=str(dest),
                     match_score=candidate.match_score,
                 )
                 repo.log_processing(doi, "resolve_fallback", "success", None)
@@ -623,10 +635,16 @@ def verify_pdfs(ctx, limit, model, no_llm, rerun_uncertain):
 
 
 @main.command("wiki-ingest")
-@click.option("--limit", default=None, type=int, help="Papers per run (default: config wiki_ingest_batch)")
+@click.option(
+    "--limit", default=None, type=int, help="Papers per run (default: config wiki_ingest_batch)"
+)
 @click.option("--dry-run", is_flag=True, help="Show the batch without running process-paper")
-@click.option("--refresh", is_flag=True, help="Rebuild existing source pages (preserves free-text notes)")
-@click.option("--keys", multiple=True, help="Re-ingest only these bib_keys (implies --refresh candidates)")
+@click.option(
+    "--refresh", is_flag=True, help="Rebuild existing source pages (preserves free-text notes)"
+)
+@click.option(
+    "--keys", multiple=True, help="Re-ingest only these bib_keys (implies --refresh candidates)"
+)
 @click.pass_context
 def wiki_ingest(ctx, limit, dry_run, refresh, keys):
     """
@@ -700,9 +718,13 @@ def wiki_ingest(ctx, limit, dry_run, refresh, keys):
     default="incremental",
     help="monthly = full refresh incl. collect/enrich; incremental = scrape onwards",
 )
-@click.option("--stages", "stages_csv", default=None,
-              help="Comma-separated stage subset (collect,scrape,enrich,download,"
-                   "fallbacks,verify,ingest,index,fts)")
+@click.option(
+    "--stages",
+    "stages_csv",
+    default=None,
+    help="Comma-separated stage subset (collect,scrape,enrich,download,"
+    "fallbacks,verify,ingest,index,fts)",
+)
 @click.option("--year", default=None, type=int, help="Target year (default: current year)")
 @click.option("--report/--no-report", default=True, help="Write a markdown run report")
 @click.pass_context
@@ -732,8 +754,12 @@ def pipeline(ctx, profile, stages_csv, year, report):
 
     stage_invokes = {
         "collect": lambda: ctx.invoke(
-            collect, field="all", year_start=target_year, year_end=target_year,
-            force=True, skip_fts_rebuild=True,
+            collect,
+            field="all",
+            year_start=target_year,
+            year_end=target_year,
+            force=True,
+            skip_fts_rebuild=True,
         ),
         "scrape": lambda: ctx.invoke(scrape, delay=settings.crawl_delay),
         "enrich": lambda: ctx.invoke(

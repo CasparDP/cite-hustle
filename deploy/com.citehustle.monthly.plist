@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.citehustle.monthly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/__USER__/Github/cite-hustle/deploy/run_pipeline.sh</string>
+        <string>monthly</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key>
+        <integer>2</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/__USER__/Library/Logs/cite-hustle/monthly.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/__USER__/Library/Logs/cite-hustle/monthly.err.log</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

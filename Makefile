@@ -26,7 +26,7 @@ rebuild-fts:
 
 # ── Data pipeline (individual steps) ─────────────────────────────────────────
 
-.PHONY: collect scrape enrich enrich-year download
+.PHONY: collect scrape enrich enrich-year download fallbacks verify wiki wiki-index
 
 collect:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
@@ -42,6 +42,28 @@ enrich-year:
 
 download:
 	$(RUN) download
+
+fallbacks:
+	$(RUN) resolve-fallbacks
+
+verify:
+	$(RUN) verify-pdfs
+
+wiki:
+	$(RUN) wiki-ingest
+
+wiki-index:
+	$(RUN) wiki-index
+
+# ── Unattended pipeline (used by launchd on the runner laptop) ───────────────
+
+.PHONY: pipeline pipeline-monthly
+
+pipeline:
+	$(RUN) pipeline --profile incremental
+
+pipeline-monthly:
+	$(RUN) pipeline --profile monthly
 
 # ── Update (main workflow) ────────────────────────────────────────────────────
 # make update           → collect + enrich for current year (fast, no browser)

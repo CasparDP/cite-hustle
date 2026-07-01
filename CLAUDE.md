@@ -34,20 +34,31 @@ cite-hustle/
 ├── src/cite_hustle/
 │   ├── cli/commands.py        # CLI entrypoint (Click) - all subcommands here
 │   ├── config.py              # Settings (pydantic-settings), env vars CITE_HUSTLE_*
+│   ├── matching.py            # Shared fuzzy title/author matching helpers
+│   ├── paths.py               # Portable $HOME/... path conversion for DB-stored paths
+│   ├── verifier.py            # PDFVerifier: checks PDFs match article metadata
+│   ├── pipeline.py            # Pipeline profiles, preflight guards, run reports
 │   ├── database/
 │   │   ├── models.py          # DatabaseManager, schema, FTS index creation
 │   │   └── repository.py      # ArticleRepository - single gateway for all DB I/O
+│   ├── wiki/
+│   │   ├── bridge.py          # DuckDB -> manifest -> process-paper subprocess -> reconcile
+│   │   └── indexes.py         # Auto-generated wiki index pages (journal/year/topics)
 │   └── collectors/
-│       ├── journals.py        # Journal registry (28 journals across 4 fields)
+│       ├── journals.py        # Journal registry (36 journals across 4 fields)
 │       ├── metadata.py        # CrossRef API collector
 │       ├── ssrn_scraper.py    # Selenium-based SSRN search + abstract extraction
 │       ├── selenium_pdf_downloader.py  # Selenium PDF downloader (recommended)
 │       ├── openalex_enricher.py        # OpenAlex API enricher (async, fetches missing abstracts)
+│       ├── fallback_resolvers.py       # OA/NBER/arXiv PDF resolvers (post-SSRN fallback)
+│       ├── http_pdf_downloader.py      # Plain HTTP PDF download for fallback sources
 │       └── pdf_downloader.py  # Legacy HTTP downloader (usually blocked by Cloudflare)
+├── deploy/                    # Runner-laptop deployment (launchd plists, install.sh, README)
 ├── scripts/
 │   ├── reset_failed_scrapes.py      # Reset failed SSRN scrapes for retry
 │   ├── cleanup_non_articles.py      # Remove non-article content from DB
-│   └── cleanup_bad_ssrn_html.py     # Remove Cloudflare challenge HTML artifacts
+│   ├── cleanup_bad_ssrn_html.py     # Remove Cloudflare challenge HTML artifacts
+│   └── migrate_002_pdf_files.py     # One-time backfill of pdf_files from ssrn_pages
 ├── pyproject.toml             # Poetry config, dependencies, scripts
 ├── CLI-CHEATSHEET.md          # Complete CLI reference
 └── README.md                  # User documentation
@@ -65,6 +76,10 @@ cite-hustle/
 | SSRN Scraper | `collectors/ssrn_scraper.py` | `SSRNScraper` searches SSRN, extracts abstracts using Selenium |
 | PDF Download | `collectors/selenium_pdf_downloader.py` | `SeleniumPDFDownloader` downloads PDFs (Cloudflare-safe) |
 | OpenAlex | `collectors/openalex_enricher.py` | `OpenAlexEnricher` fetches missing abstracts via OpenAlex API (async) |
+| Fallback PDFs | `collectors/fallback_resolvers.py` | `OAResolver`/`NBERResolver`/`ArXivResolver` find PDFs when SSRN fails |
+| PDF Verifier | `verifier.py` | `PDFVerifier` checks PDF matches metadata; quarantines mismatches |
+| Wiki Bridge | `wiki/bridge.py` | `WikiBridge` runs verified PDFs through the process-paper skill (subprocess) |
+| Pipeline | `pipeline.py` | Profiles, Dropbox/DB preflight guards, lockfile, markdown run reports |
 
 ## Storage Conventions
 
@@ -113,6 +128,25 @@ poetry run cite-hustle search "Smith" --author
 poetry run cite-hustle enrich-openalex --limit 200
 poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
 poetry run cite-hustle enrich-openalex --force --skip-fts-rebuild
+
+# Fallback PDF resolution (after SSRN fails: OpenAlex OA -> NBER -> arXiv)
+poetry run cite-hustle resolve-fallbacks --limit 200
+poetry run cite-hustle resolve-fallbacks --sources oa --recheck-days 90
+
+# Verify downloaded PDFs match their article metadata (quarantines mismatches)
+poetry run cite-hustle verify-pdfs
+poetry run cite-hustle verify-pdfs --no-llm          # deterministic only
+poetry run cite-hustle verify-pdfs --rerun-uncertain # re-check gray-zone PDFs
+
+# Wiki ingestion (deep summaries via process-paper; needs OLLAMA_API_KEY)
+poetry run cite-hustle wiki-ingest --limit 10
+poetry run cite-hustle wiki-ingest --dry-run
+poetry run cite-hustle wiki-index                    # regenerate index pages only
+
+# Unattended pipeline (used by launchd on the runner laptop; see deploy/README.md)
+poetry run cite-hustle pipeline --profile monthly
+poetry run cite-hustle pipeline --profile incremental
+poetry run cite-hustle pipeline --stages verify,ingest,index,fts
 
 # Utilities
 poetry run cite-hustle status          # Database statistics
@@ -233,6 +267,15 @@ ssrn_pages (doi PK/FK, ssrn_url, ssrn_id, html_content, html_file_path, abstract
             pdf_downloaded, pdf_file_path, match_score, scraped_at, error_message)
 processing_log (id PK, doi, stage, status, error_message, processed_at)
 
+-- Any-source PDF pipeline (added 2026-07)
+pdf_files (doi PK/FK, source 'ssrn'|'nber'|'arxiv'|'oa', source_url, pdf_url, pdf_file_path,
+           match_score, downloaded_at, verify_status 'pending'|'match'|'mismatch'|'uncertain'|'unreadable',
+           verify_method, verify_score, verify_model, verify_reason, verified_at)
+pdf_candidates (doi+source PK, candidate_url, pdf_url, match_score, status, error_message, checked_at)
+wiki_pages (doi PK/FK, bib_key UNIQUE, source_page_path, extraction_depth, analyst_model,
+            verifier_model, status 'pending'|'ingested'|'flagged'|'failed', error_message, ingested_at)
+pipeline_runs (id PK, run_id, stage, status, detail JSON, started_at, finished_at)
+
 -- FTS indexes (BM25 ranking)
 fts_main_articles (on title)
 fts_main_ssrn_pages (on abstract)
@@ -321,6 +364,10 @@ poetry run python extract_abstracts_from_html.py
 ## Decisions Log
 
 - **Dropbox base path** is universal across dev machines: `$HOME/Dropbox/Github Data/cite-hustle`
-- **Legacy HTTP PDF downloader** remains disabled; always use Selenium path
+- **Legacy HTTP PDF downloader** remains disabled; always use Selenium path (SSRN only; fallback sources use plain HTTP)
 - **HTML content** stored on disk, not in DB (reduces DB size, enables external analysis)
 - **Portable paths** use `$HOME/...` format for cross-machine compatibility
+- **Single writer** (2026-07): the dedicated runner laptop is the only machine that writes to the DB; other machines use read-only commands. See `deploy/README.md`.
+- **Verification precedes wiki ingestion**: only `pdf_files.verify_status = 'match'` PDFs are ingested; mismatches are quarantined to `pdfs/quarantine/` and the SSRN path marked unavailable so fallbacks take over.
+- **Wiki lives at** `$HOME/Dropbox/Github Data/cite-hustle/wiki/` in process-paper format (`sources/`, `concepts/`, auto-generated `indexes/`); summaries are produced by the external process-paper skill (deep depth), never by reimplementing it here.
+- **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact); open-access only, no paywalled publisher scraping.
