@@ -364,12 +364,28 @@ class ArticleRepository:
         )
 
     def get_articles_without_pdf(self, limit: Optional[int] = None) -> pd.DataFrame:
-        """Get articles that have no PDF on disk from any source."""
+        """Get articles with no PDF on disk where the SSRN path has failed.
+
+        Eligible for fallback resolution: no pdf_files row, and either SSRN
+        never matched the paper (no ssrn_url) or the SSRN download was marked
+        unavailable. Articles still pending a first SSRN download attempt are
+        left to the SSRN downloader.
+        """
         query = """
             SELECT a.doi, a.title, a.authors, a.year, a.journal_name
             FROM articles a
             LEFT JOIN pdf_files p ON a.doi = p.doi
+            LEFT JOIN ssrn_pages s ON a.doi = s.doi
             WHERE p.doi IS NULL
+              AND (
+                  s.ssrn_url IS NULL
+                  OR EXISTS (
+                      SELECT 1 FROM processing_log pl
+                      WHERE pl.doi = a.doi
+                        AND pl.stage = 'download_pdf'
+                        AND pl.status = 'unavailable'
+                  )
+              )
             ORDER BY a.year DESC
         """
         if limit:

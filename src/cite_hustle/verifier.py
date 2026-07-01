@@ -206,8 +206,13 @@ class PDFVerifier:
         self.repo.log_processing(doi, "verify_pdf", "mismatch", reason)
 
         if row.get("source") == "ssrn":
-            # Reset the SSRN download flags so the paper can be re-resolved
+            # Reset the download flags, and mark the SSRN path unavailable:
+            # re-downloading from the same (mismatched) SSRN page would just
+            # fetch the same wrong PDF. Fallback resolvers pick the paper up.
             self.repo.reset_ssrn_download(doi)
+            self.repo.log_processing(
+                doi, "download_pdf", "unavailable", "PDF mismatch quarantined"
+            )
         else:
             # Don't re-fetch the same bad candidate from this source
             self.repo.record_pdf_candidate(

@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     pdf_verifier_model: str = "gpt-oss:20b:cloud"
     verify_gray_zone_low: int = 55
     verify_gray_zone_high: int = 88
+
+    # Fallback resolution (articles attempted per pipeline run)
+    fallback_batch: int = 200
     
     class Config:
         env_file = ".env"
