@@ -25,6 +25,8 @@ class JournalRegistry:
         Journal("Contemporary Accounting Research", "0823-9150", "accounting", "Wiley"),
         Journal("Accounting, Organizations and Society", "0361-3682", "accounting", "Elsevier"),
         Journal("Review of Accounting Studies", "1380-6653", "accounting", "Springer"),
+        Journal("European Accounting Review", "0963-8180", "accounting", "Taylor & Francis"),
+        Journal("Auditing: A Journal of Practice & Theory", "0278-0380", "accounting", "AAA"),
     ]
 
     # Top Finance Journals
@@ -38,6 +40,7 @@ class JournalRegistry:
         Journal("Financial Management", "0046-3892", "finance", "Wiley"),
         Journal("Management Science", "0025-1909", "finance", "INFORMS"),
         Journal("Journal of Corporate Finance", "0929-1199", "finance", "Elsevier"),
+        Journal("Annual Review of Financial Economics", "1941-1367", "finance", "Annual Reviews"),
     ]
 
     # Top Economics Journals
@@ -51,6 +54,10 @@ class JournalRegistry:
         Journal("Journal of Economic Perspectives", "0895-3309", "economics", "AEA"),
         Journal("Journal of Labor Economics", "0734-306X", "economics", "Chicago"),
         Journal("Journal of Human Resources", "0022-166X", "economics", "Wisconsin"),
+        Journal("Journal of Law and Economics", "0022-2186", "economics", "Chicago"),
+        Journal("Review of Economics and Statistics", "0034-6535", "economics", "MIT Press"),
+        Journal("Annual Review of Economics", "1941-1383", "economics", "Annual Reviews"),
+        Journal("Journal of Health Economics", "0167-6296", "economics", "Elsevier"),
     ]
 
     # Top Management Journals

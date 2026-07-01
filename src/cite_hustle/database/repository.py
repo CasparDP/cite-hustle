@@ -110,7 +110,7 @@ class ArticleRepository:
             SELECT a.doi, a.title, a.authors, a.year, a.journal_name
             FROM articles a
             LEFT JOIN ssrn_pages s ON a.doi = s.doi
-            WHERE s.abstract IS NULL OR s.abstract = ''
+            WHERE (s.abstract IS NULL OR s.abstract = '')
         """
         if year_start is not None and year_end is not None:
             query += " AND a.year BETWEEN ? AND ?"
