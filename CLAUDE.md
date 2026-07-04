@@ -45,7 +45,7 @@ cite-hustle/
 │   │   ├── bridge.py          # DuckDB -> manifest -> process-paper subprocess -> reconcile
 │   │   └── indexes.py         # Auto-generated wiki index pages (journal/year/topics)
 │   └── collectors/
-│       ├── journals.py        # Journal registry (36 journals across 4 fields)
+│       ├── journals.py        # Journal registry (source of truth; run `cite-hustle journals`)
 │       ├── metadata.py        # CrossRef API collector
 │       ├── ssrn_scraper.py    # Selenium-based SSRN search + abstract extraction
 │       ├── selenium_pdf_downloader.py  # Selenium PDF downloader (recommended)
@@ -189,6 +189,8 @@ Results are scored using combined similarity:
 - **30%** title-length similarity
 
 Accept match if score ≥ threshold (default 85). See `SSRNScraper._calculate_combined_similarity`.
+
+Note: two independent defaults exist; the `scrape` command's `--threshold` flag defaults to 85, while `Settings.similarity_threshold` (used by `resolve-fallbacks`, set via `CITE_HUSTLE_SIMILARITY_THRESHOLD`) defaults to 90.
 
 ### Anti-Detection (Selenium)
 The scraping/downloading stack currently uses a mixed Selenium approach:

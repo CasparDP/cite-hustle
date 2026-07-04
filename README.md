@@ -152,23 +152,7 @@ Override the location with `CITE_HUSTLE_DROPBOX_BASE`. Stored paths use the
 
 ## Supported journals
 
-28 journals across 4 fields. Collect everything with `--field all`.
-
-- **Accounting (6):** The Accounting Review; Journal of Accounting and
-  Economics; Journal of Accounting Research; Contemporary Accounting Research;
-  Accounting, Organizations and Society; Review of Accounting Studies
-- **Finance (7):** Journal of Finance; Journal of Financial Economics; Review of
-  Financial Studies; Journal of Financial and Quantitative Analysis; Financial
-  Management; Management Science; Journal of Corporate Finance
-- **Economics (9):** American Economic Review; Econometrica; Quarterly Journal of
-  Economics; Journal of Political Economy; Review of Economic Studies; Journal of
-  Economic Literature; Journal of Economic Perspectives; Journal of Labor
-  Economics; Journal of Human Resources
-- **Management (6):** Human Resource Management; Academy of Management Annals;
-  Academy of Management Journal; Academy of Management Review; Administrative
-  Science Quarterly; Journal of Management
-
-The registry lives in [`journals.py`](src/cite_hustle/collectors/journals.py).
+Spans accounting, finance, economics, and management. Run `cite-hustle journals` for the current list, or collect everything with `--field all`. The registry lives in [`journals.py`](src/cite_hustle/collectors/journals.py).
 
 ## Project structure
 
