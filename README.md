@@ -107,12 +107,18 @@ Key behavior:
 - **Skips dead ends.** Papers with no posted full text are marked
   "not available" and skipped on later runs. Use `--retry-unavailable` to force
   a re-check.
-- **Unattended-friendly.** Leave it running to work through a large backlog. On
-  macOS, prevent the machine from sleeping:
+- **Run it while you're at the machine.** The visible browser only clears
+  SSRN's Cloudflare challenge on an active, unlocked screen, so run downloads in
+  resumable chunks rather than leaving them unattended on a machine that locks:
 
   ```bash
-  caffeinate -i poetry run cite-hustle download
+  caffeinate -i poetry run cite-hustle download --limit 200
   ```
+
+  Fully unattended scheduling is reliable only on the dedicated runner laptop,
+  which stays awake, logged in, and never locks (see
+  [`deploy/README.md`](deploy/README.md)). On a normal machine a locked screen
+  stalls the Cloudflare challenge and downloads crawl.
 
 It is normal for some papers to be unavailable (the author never posted the full
 text). Those count as "not available", not failures.
