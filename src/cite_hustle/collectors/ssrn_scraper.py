@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from urllib3.exceptions import MaxRetryError, ReadTimeoutError
 from rapidfuzz import fuzz
 from tqdm import tqdm
 
@@ -21,6 +22,38 @@ from cite_hustle.database.repository import ArticleRepository
 # Session-level randomization profiles for timezone, locale and window size.
 # User-agent is left to undetected-chromedriver so it always matches the real
 # Chrome version – overriding it is a detection signal.
+# Seconds before a navigation is abandoned. Cloudflare challenge loops can hold
+# the load event open indefinitely; without this, Selenium's HTTP client only
+# gives up after 120s with an opaque ReadTimeoutError.
+PAGE_LOAD_TIMEOUT = 45
+
+# Markers that appear only on Cloudflare challenge/interstitial pages. Generic
+# markers like data-cfasync or __cf_bm appear on every Cloudflare-served page
+# and must not be used here (they caused false positives historically).
+CHALLENGE_MARKERS = (
+    "<title>just a moment",  # Cloudflare interstitial title
+    "performing security verification",  # SSRN's challenge page heading
+    "verify you are human",  # Turnstile checkbox label
+    "challenges.cloudflare.com",  # Turnstile iframe host
+    "cf-turnstile",  # Turnstile widget class
+)
+
+# Error-message fragments that indicate a Cloudflare block rather than an
+# article-level problem; these feed the run-level circuit breaker.
+# Contract: any new block-type error message MUST contain one of these
+# fragments, or it will silently not count toward the circuit breaker.
+BLOCK_ERROR_MARKERS = (
+    "cloudflare",
+    "browser unresponsive",
+)
+
+# Shared between the two layers that can see urllib3 client failures; the
+# "browser unresponsive" fragment is what _is_block_error keys on.
+BROWSER_UNRESPONSIVE_MSG = "Browser unresponsive: {} (suspected Cloudflare block)"
+
+# Abort a run after this many consecutive block-type failures
+BLOCK_ABORT_THRESHOLD = 3
+
 SESSION_PROFILES = [
     {
         "name": "us_east",
@@ -158,6 +191,7 @@ class SSRNScraper:
 
         # Initialize undetected-chromedriver
         self.driver = uc.Chrome(**kwargs)
+        self.driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
         version_label = f"chrome v{chrome_major}" if chrome_major is not None else "chrome version auto"
         print(f"  ✓ undetected-chromedriver started (profile: {profile['name']}, {version_label})")
 
@@ -262,121 +296,111 @@ class SSRNScraper:
         if wait_for > 0:
             time.sleep(wait_for)
 
-    def _load_url(self, url: str) -> uc.Chrome:
-        """Navigate to a URL while honoring crawl delay and human pacing."""
+    def _load_url(self, url: str) -> bool:
+        """Navigate to a URL while honoring crawl delay and human pacing.
+
+        Returns False when the page load timed out; a Cloudflare challenge loop
+        can hold the load event open, but the partially rendered page is still
+        inspectable via page_source.
+        """
         drv = self._get_driver()
         self._respect_crawl_delay()
-        drv.get(url)
+        try:
+            drv.get(url)
+            loaded = True
+        except TimeoutException:
+            print(f"  ⚠️  Page load timed out after {PAGE_LOAD_TIMEOUT}s; inspecting partial page...")
+            loaded = False
         self._last_navigation = time.time()
         self._human_pause(1.4, jitter=0.4)
-        return drv
+        return loaded
 
-    def _detect_cloudflare_challenge(self) -> bool:
-        """
-        Detect if current page is a Cloudflare challenge page.
-        Looks for Cloudflare-specific markers in page source.
-        """
-        try:
-            page_source = self.driver.page_source.lower() if self.driver else ""
+    @staticmethod
+    def _page_looks_like_challenge(page_source: Optional[str]) -> bool:
+        """Return True if the HTML is a Cloudflare challenge/interstitial page."""
+        src = (page_source or "").lower()
+        return any(marker in src for marker in CHALLENGE_MARKERS)
 
-            # Multiple markers for Cloudflare challenge pages
-            markers = [
-                'data-cfasync' in page_source,
-                'cf_clearance' in page_source,
-                'challenge' in page_source and 'cloudflare' in page_source,
-                '__cf_bm' in page_source,
-            ]
-
-            if any(markers):
-                print("  ⚠️  Cloudflare challenge detected!")
-                return True
-        except Exception as e:
-            print(f"  ℹ️  Could not check for Cloudflare challenge: {type(e).__name__}")
-
-        return False
-
-    def _wait_for_cloudflare_cookie(self, timeout: int = 10) -> bool:
-        """
-        Wait for Cloudflare's clearance cookie (__cf_bm) after challenge completes.
-        Cloudflare's JS challenge typically completes in ~5 seconds.
-        """
-        if not self.driver:
+    @staticmethod
+    def _is_block_error(error_message: Optional[str]) -> bool:
+        """Return True if an error message indicates a Cloudflare block."""
+        if not error_message:
             return False
+        msg = error_message.lower()
+        return any(marker in msg for marker in BLOCK_ERROR_MARKERS)
 
-        print(f"  ⏳ Waiting for Cloudflare clearance (up to {timeout}s)...")
-        start = time.time()
-
-        while time.time() - start < timeout:
-            try:
-                cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
-                if '__cf_bm' in cookies or 'cf_clearance' in cookies:
-                    print("  ✓ Cloudflare cookie acquired! Challenge passed.")
-                    time.sleep(2)  # Extra buffer for page to fully load
-                    return True
-            except Exception as e:
-                print(f"  ℹ️  Cookie check error: {type(e).__name__}")
-
-            time.sleep(0.5)  # Check every 500ms
-
-        print(f"  ✗ Cloudflare clearance timeout after {timeout}s")
-        return False
-
-    def _is_cloudflare_or_blocked_page(self) -> Tuple[bool, Optional[str]]:
-        """
-        Detect if current page is a Cloudflare challenge or IP block page.
-        Returns: (is_challenge_or_block, page_type)
-        """
+    def _is_challenge_page(self) -> bool:
+        """Check whether the currently loaded page is a Cloudflare challenge."""
         try:
             page_source = self.driver.page_source if self.driver else ""
-
-            # Check for Cloudflare challenge
-            if self._detect_cloudflare_challenge():
-                return True, "cloudflare_challenge"
-
-            # Check for rate limit / IP block pages
-            if any(indicator in page_source for indicator in [
-                '403 Forbidden',
-                '429 Too Many Requests',
-                'Access Denied',
-                'Too Many Requests',
-            ]):
-                print("  ✗ IP blocked or rate limited (403/429 response)")
-                return True, "ip_blocked"
-
         except Exception as e:
-            print(f"  ℹ️  Page check error: {type(e).__name__}")
+            print(f"  ℹ️  Could not read page source: {type(e).__name__}")
+            return False
+        return self._page_looks_like_challenge(page_source)
 
-        return False, None
+    def _wait_for_challenge_resolution(self, auto_timeout: int = 20, manual_timeout: int = 90) -> bool:
+        """
+        Wait for a detected Cloudflare challenge to clear.
+
+        First waits for Cloudflare's automatic verification; if the interactive
+        "Verify you are human" checkbox remains and the browser is visible,
+        prompts the operator to click it and keeps polling. Success is judged by
+        the challenge page actually going away, never by cookie presence
+        (__cf_bm is set on every Cloudflare response, challenge or not).
+        """
+        print(f"  ⏳ Cloudflare challenge detected; waiting up to {auto_timeout}s for auto-clear...")
+        deadline = time.time() + auto_timeout
+        while time.time() < deadline:
+            if not self._is_challenge_page():
+                print("  ✓ Challenge cleared.")
+                time.sleep(2)  # Let the real page settle
+                return True
+            time.sleep(1)
+
+        if self.headless:
+            print("  ✗ Challenge did not auto-clear (headless: cannot solve interactively)")
+            return False
+
+        print(
+            "  👤 ACTION NEEDED: click the 'Verify you are human' checkbox in the "
+            f"Chrome window (waiting up to {manual_timeout}s)..."
+        )
+        deadline = time.time() + manual_timeout
+        while time.time() < deadline:
+            if not self._is_challenge_page():
+                print("  ✓ Challenge cleared.")
+                time.sleep(2)
+                return True
+            time.sleep(1)
+
+        print("  ✗ Challenge was not cleared in time")
+        return False
 
     def _handle_cloudflare_challenge(self, url: str, max_attempts: int = 3) -> bool:
         """
-        Attempt to handle Cloudflare challenge by waiting for clearance.
-        Retries with exponential backoff if initial attempt fails.
+        Navigate to a URL, clearing any Cloudflare challenge along the way.
+        Retries with backoff if the challenge does not resolve.
         """
         for attempt in range(max_attempts):
             print(f"  → Navigating (attempt {attempt + 1}/{max_attempts})...")
-            self._load_url(url)
+            loaded = self._load_url(url)
 
-            # Check for challenge immediately
-            is_challenge, page_type = self._is_cloudflare_or_blocked_page()
-
-            if page_type == "cloudflare_challenge":
-                if self._wait_for_cloudflare_cookie(timeout=15):
-                    return True  # Challenge passed
-                else:
-                    if attempt < max_attempts - 1:
-                        wait_time = 5 * (attempt + 1)  # Exponential backoff: 5s, 10s, 15s
-                        print(f"  ⏳ Retry in {wait_time}s...")
-                        time.sleep(wait_time)
-                    continue
-            elif page_type == "ip_blocked":
-                print(f"  ✗ IP appears to be blocked. Consider using a proxy.")
-                return False
-            else:
-                # No challenge detected, page loaded normally
+            if not self._is_challenge_page():
+                if not loaded:
+                    # A held-open load event (ads, beacons) does not mean the DOM
+                    # is unusable; the element waits downstream are the real gate
+                    print("  ⚠️  Proceeding on partially loaded page")
                 return True
 
-        print(f"  ✗ Failed to bypass Cloudflare after {max_attempts} attempts")
+            if self._wait_for_challenge_resolution():
+                return True
+
+            if attempt < max_attempts - 1:
+                wait_time = 5 * (attempt + 1)
+                print(f"  ⏳ Retry in {wait_time}s...")
+                time.sleep(wait_time)
+
+        print(f"  ✗ Failed to clear Cloudflare challenge after {max_attempts} attempts")
         return False
 
     def _type_like_human(self, element, text: str):
@@ -541,7 +565,11 @@ class SSRNScraper:
                         or d.find_elements(By.XPATH, "//h3[@data-component='Typography' and normalize-space()='No results.']")
                     )
                 )
-            except TimeoutException as e:
+            except TimeoutException:
+                # A challenge that appeared mid-session must not masquerade as
+                # an article with no SSRN presence
+                if self._is_challenge_page():
+                    return False, "Cloudflare challenge appeared while waiting for results", []
                 # Nothing appeared in time; treat as no results for this title
                 print("   Neither results nor 'No results.' message appeared in time; skipping title.")
                 return True, "No results (timeout)", []
@@ -582,6 +610,12 @@ class SSRNScraper:
             return True, None, results
 
         except TimeoutException as e:
+            # Distinguish a Cloudflare challenge from a genuine element timeout
+            if self._is_challenge_page():
+                error_msg = "Cloudflare challenge blocked the search page"
+                print(f"✗ Error searching SSRN for '{title}': {error_msg}")
+                return False, error_msg, []
+
             # Save screenshot for debugging
             screenshot_path = self._save_error_screenshot(title)
             current_url = self.driver.current_url if self.driver else "unknown"
@@ -593,6 +627,12 @@ class SSRNScraper:
                 f"Screenshot: {screenshot_path}. "
                 f"Details: {str(e) if str(e) else 'No details available'}"
             )
+            print(f"✗ Error searching SSRN for '{title}': {error_msg}")
+            return False, error_msg, []
+        except (ReadTimeoutError, MaxRetryError) as e:
+            # Selenium's HTTP client gave up on the browser entirely; on this
+            # site that almost always means a Cloudflare challenge loop
+            error_msg = BROWSER_UNRESPONSIVE_MSG.format(type(e).__name__)
             print(f"✗ Error searching SSRN for '{title}': {error_msg}")
             return False, error_msg, []
         except WebDriverException as e:
@@ -869,7 +909,8 @@ class SSRNScraper:
             'html_file_path': None,
             'match_score': None,
             'error_message': None,
-            'success': False
+            'success': False,
+            'block_suspected': False
         }
 
         try:
@@ -877,6 +918,13 @@ class SSRNScraper:
             search_success, search_error, results = self.search_ssrn_and_extract_urls(title)
 
             if not search_success:
+                # A Cloudflare block will not clear by hammering the same URL;
+                # let the run-level circuit breaker decide instead of retrying
+                if self._is_block_error(search_error):
+                    result['error_message'] = search_error
+                    result['block_suspected'] = True
+                    return result
+
                 # Check if we should retry
                 if retry_count < self.max_retries and search_error:
                     wait_time = self.crawl_delay * (self.backoff_factor ** retry_count)
@@ -887,6 +935,15 @@ class SSRNScraper:
                     return self.scrape_article(doi, title, retry_count + 1)
 
                 result['error_message'] = search_error or "Failed to search SSRN"
+                return result
+
+            if not results:
+                # Keep the timeout variant distinct from a genuine empty result
+                # so blocks are not masked as "No search results found"
+                if search_error and "timeout" in search_error.lower():
+                    result['error_message'] = search_error
+                else:
+                    result['error_message'] = "No search results found"
                 return result
 
             # Find best matching result using combined similarity
@@ -912,6 +969,12 @@ class SSRNScraper:
 
             return result
 
+        except (ReadTimeoutError, MaxRetryError) as e:
+            error_msg = BROWSER_UNRESPONSIVE_MSG.format(type(e).__name__)
+            result['error_message'] = error_msg
+            result['block_suspected'] = True
+            print(f"✗ {error_msg}")
+            return result
         except Exception as e:
             error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             result['error_message'] = error_msg
@@ -933,8 +996,10 @@ class SSRNScraper:
             'total': len(articles_df),
             'success': 0,
             'failed': 0,
-            'no_match': 0
+            'no_match': 0,
+            'aborted': False
         }
+        consecutive_block_failures = 0
 
         # Setup webdriver
         self.setup_webdriver()
@@ -976,6 +1041,21 @@ class SSRNScraper:
                 else:
                     stats['failed'] += 1
                     self.repo.log_processing(doi, 'scrape_ssrn', 'failed', result['error_message'])
+
+                # Circuit breaker: a challenge-flagged IP will fail every article;
+                # stop early instead of hammering Cloudflare for hours
+                if result.get('block_suspected'):
+                    consecutive_block_failures += 1
+                    if consecutive_block_failures >= BLOCK_ABORT_THRESHOLD:
+                        print(
+                            f"\n✗ Aborting run: {consecutive_block_failures} consecutive "
+                            f"Cloudflare-type failures. This IP appears challenge-flagged; "
+                            f"try the runner laptop, a longer --delay, or wait a few hours."
+                        )
+                        stats['aborted'] = True
+                        break
+                else:
+                    consecutive_block_failures = 0
 
                 # Respect variable crawl delay (only between successful/normal operations)
                 if idx < len(articles_df) - 1:  # Don't delay after last item

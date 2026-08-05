@@ -211,7 +211,12 @@ def collect(ctx, field, year_start, year_end, parallel, skip_fts_rebuild, force)
 
 @main.command()
 @click.option("--limit", default=None, type=int, help="Limit number of articles to scrape")
-@click.option("--delay", default=5, type=int, help="Delay between requests (seconds)")
+@click.option(
+    "--delay",
+    default=20,
+    type=int,
+    help="Delay between requests (seconds); default raised from 5 to reduce Cloudflare challenges",
+)
 @click.option("--threshold", default=85, type=int, help="Minimum similarity threshold (0-100)")
 @click.option("--headless/--no-headless", default=True, help="Run browser in headless mode")
 @click.pass_context
@@ -257,7 +262,10 @@ def scrape(ctx, limit, delay, threshold, headless):
 
         # Summary
         click.echo(f"\n{'=' * 60}")
-        click.echo(f"✓ SCRAPING COMPLETE")
+        if stats.get("aborted"):
+            click.echo("✗ SCRAPING ABORTED (Cloudflare block suspected)")
+        else:
+            click.echo("✓ SCRAPING COMPLETE")
         click.echo(f"{'=' * 60}")
         click.echo(f"Total processed: {stats['total']}")
         click.echo(f"✓ Successful: {stats['success']}")
