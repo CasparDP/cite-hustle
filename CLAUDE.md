@@ -113,7 +113,7 @@ poetry run cite-hustle collect --field all --year-start 2024 --year-end 2025 --f
 poetry run cite-hustle collect --field all --year-start 2024 --parallel
 
 # Scrape SSRN for abstracts
-poetry run cite-hustle scrape --limit 50 --delay 5 --threshold 85
+poetry run cite-hustle scrape --limit 50 --threshold 85
 poetry run cite-hustle scrape --no-headless  # Show browser for debugging
 
 # Download PDFs (use Selenium - HTTP is blocked by Cloudflare)
@@ -199,6 +199,8 @@ The scraping/downloading stack currently uses a mixed Selenium approach:
 - `undetected-chromedriver` support in the dependency stack
 - Randomized browser behavior/fingerprints and automation-flag hardening where implemented
 - Automatic cookie acceptance and Cloudflare challenge handling
+
+Cloudflare handling in `ssrn_scraper.py` (since 2026-08): challenges are detected by content markers unique to challenge pages (never `data-cfasync`/`__cf_bm`, which appear on every Cloudflare-served page); "passed" means the challenge page actually went away, never cookie presence. Interactive Turnstile checkboxes prompt the operator in headful mode. Block-type failures skip per-article retries and trip a run-level circuit breaker (abort after 3 consecutive). A 45s page-load timeout replaces opaque 120s client hangs. See `tests/test_ssrn_blocking.py` for the pinned behavior.
 
 Implementation details may differ between `ssrn_scraper.py` and `selenium_pdf_downloader.py`, so prefer code-level verification when changing anti-detection behavior.
 
@@ -289,6 +291,7 @@ fts_main_ssrn_pages (on abstract)
 |---------|----------|
 | Search returns empty results | `poetry run cite-hustle rebuild-fts` |
 | Cloudflare blocks downloads | Use `--use-selenium` and `--no-headless` to debug |
+| Scrape aborts with "Cloudflare block suspected" | IP is challenge-flagged (verify: `curl` to papers.ssrn.com returns instant 403). Run on the runner laptop, raise `--delay`, or wait a few hours; in headful mode click the Turnstile checkbox when prompted |
 | Paths wrong across machines | Check `$HOME/Dropbox/Github Data/cite-hustle` exists or set `CITE_HUSTLE_*` env vars |
 | ChromeDriver not found | `brew install --cask chromedriver` |
 | DuckDB lock error | Close other DuckDB connections (CLI tools, notebooks) |
@@ -334,7 +337,7 @@ poetry run python scripts/reset_failed_scrapes.py --year-cutoff 2015
 poetry run python scripts/reset_failed_scrapes.py --include-low-match
 
 # Then run scrape to retry
-poetry run cite-hustle scrape --limit 100 --delay 5
+poetry run cite-hustle scrape --limit 100
 ```
 
 **Why this exists**: The `get_pending_ssrn_scrapes()` method only returns articles with NO entry in `ssrn_pages`. Failed scrapes have entries (with error messages), so they won't be retried automatically. This script deletes those failed entries, making them "pending" again.

@@ -149,7 +149,7 @@ cite-hustle scrape [OPTIONS]
 **Options:**
 
 - `--limit <n>` - Limit number of articles to scrape (default: all pending)
-- `--delay <seconds>` - Delay between requests (default: `5`)
+- `--delay <seconds>` - Delay between requests (default: `20`; raised from 5 to reduce Cloudflare challenges)
 - `--threshold <0-100>` - Minimum similarity threshold for matching (default: `85`)
 - `--headless` / `--no-headless` - Run browser in headless mode (default: headless)
 
