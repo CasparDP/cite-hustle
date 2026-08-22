@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     # Retry an 'error'-status candidate after this many days (no_match uses --recheck-days)
     error_recheck_days: int = 2
 
+    # Institutional (EZproxy) acquisition
+    ezproxy_prefix: str = "https://eur.idm.oclc.org/login?url="
+    chrome_profile_dir: Path = Path.home() / ".cache" / "cite-hustle" / "chrome-profile"
+    login_probe_url: str = "https://www.sciencedirect.com"
+    institutional_batch: int = 50
+    institutional_delay: int = 10
+
     class Config:
         env_file = ".env"
         env_prefix = "CITE_HUSTLE_"
