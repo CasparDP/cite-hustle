@@ -41,8 +41,9 @@ def write_requests(entries: list[dict]) -> None:
 
 def append_request(doi: str, note: Optional[str] = None) -> bool:
     """Queue a DOI for acquisition. Returns False if it's already queued."""
+    doi = doi.strip().lower()
     entries = read_requests()
-    if any(e["doi"] == doi for e in entries):
+    if any(e["doi"].strip().lower() == doi for e in entries):
         return False
     entries.append(
         {

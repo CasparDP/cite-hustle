@@ -25,6 +25,12 @@ def test_append_is_idempotent():
     assert len(rq.read_requests()) == 1
 
 
+def test_append_is_idempotent_case_and_whitespace_insensitive():
+    rq.append_request("10.1/x")
+    assert rq.append_request(" 10.1/X ") is False
+    assert len(rq.read_requests()) == 1
+
+
 def test_read_missing_file_returns_empty():
     assert rq.read_requests() == []
 
