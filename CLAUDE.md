@@ -312,6 +312,8 @@ fts_main_ssrn_pages (on abstract)
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
 | Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
 | `enrich-openalex` shows thousands of candidates unexpectedly | Candidates = ALL articles for that year missing abstracts, not just newly added ones -- use `make enrich-year` separately, not inline with collect |
+| Elsevier/ScienceDirect institutional downloads fail (`not_a_pdf: download_timeout` or `no_pdf_link`) | Known limitation (2026-08): SD's bot detection (`cra_js_challenge`) rejects the pdfft request from any driver tried (plain Selenium incl. stealth flags, SeleniumBase UC). Wiley and OUP work. Candidates re-enter after `error_recheck_days`; fix candidates: SeleniumBase UC with its own login round, or the Elsevier API + eduVPN |
+| SSRN scrape/download fails with `session not created: cannot connect to chrome` | undetected-chromedriver 3.5.5 (unmaintained) is broken against Chrome 136+; the institutional path was migrated to plain Selenium, the SSRN path still needs migrating (SeleniumBase UC mode is installed and probe-verified to launch) |
 
 ## Environment Variables
 

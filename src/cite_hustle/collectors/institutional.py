@@ -153,7 +153,9 @@ class InstitutionalDownloader:
             # Only the wayf__idp tile is interactive; the [data-entityid]
             # li.preselection wrapper matches the same text but eats clicks.
             for el in self.driver.find_elements(By.CSS_SELECTOR, "div.wayf__idp, a.wayf__idp"):
-                if "erasmus" in (el.text or "").lower() and el.is_displayed():
+                # "Erasmus Universiteit/University ..." is EUR; never click the
+                # "Erasmus MC" (hospital ADFS) tile that also matches "erasmus".
+                if "erasmus universi" in (el.text or "").lower() and el.is_displayed():
                     try:
                         el.click()
                     except WebDriverException:
