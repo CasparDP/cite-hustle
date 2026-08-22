@@ -46,14 +46,16 @@ class ArticleRepository:
 
         df = pd.DataFrame(articles)
         # Specify columns explicitly to avoid timestamp column issues
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO articles (doi, title, authors, year, journal_issn, journal_name, publisher)
             SELECT doi, title, authors, year, journal_issn, journal_name, publisher FROM df
             ON CONFLICT (doi) DO UPDATE SET
                 title = EXCLUDED.title,
                 authors = EXCLUDED.authors,
                 updated_at = now()
-        """)
+        """
+        )
 
     def get_article_count(self) -> int:
         """Get total number of articles"""
@@ -70,6 +72,28 @@ class ArticleRepository:
         """,
             [year_start, year_end],
         ).fetchdf()
+
+    def get_article_by_doi(self, doi: str) -> Optional[Dict]:
+        """Get one article's metadata by DOI."""
+        result = self.conn.execute(
+            """
+            SELECT doi, title, authors, year, journal_issn, journal_name, publisher
+            FROM articles WHERE doi = ?
+        """,
+            [doi],
+        ).fetchone()
+        if result:
+            columns = [
+                "doi",
+                "title",
+                "authors",
+                "year",
+                "journal_issn",
+                "journal_name",
+                "publisher",
+            ]
+            return dict(zip(columns, result))
+        return None
 
     # SSRN Pages
     def insert_ssrn_page(
@@ -702,12 +726,14 @@ class ArticleRepository:
 
         # Articles by year
         stats["by_year"] = (
-            self.conn.execute("""
+            self.conn.execute(
+                """
             SELECT year, COUNT(*) as count
             FROM articles
             GROUP BY year
             ORDER BY year DESC
-        """)
+        """
+            )
             .fetchdf()
             .to_dict("records")
         )
@@ -728,10 +754,12 @@ class ArticleRepository:
             - self.conn.execute("SELECT COUNT(*) FROM ssrn_pages").fetchone()[0]
         )
 
-        stats["pending_pdf_downloads"] = self.conn.execute("""
+        stats["pending_pdf_downloads"] = self.conn.execute(
+            """
             SELECT COUNT(*) FROM ssrn_pages
             WHERE pdf_url IS NOT NULL AND (pdf_downloaded = FALSE OR pdf_downloaded IS NULL)
-        """).fetchone()[0]
+        """
+        ).fetchone()[0]
 
         # PDFs on disk by source (any-source pipeline)
         stats["pdfs_by_source"] = dict(
@@ -748,15 +776,19 @@ class ArticleRepository:
         )
 
         # Quarantined PDFs (mismatches recorded in processing_log; row removed from pdf_files)
-        stats["pdfs_quarantined"] = self.conn.execute("""
+        stats["pdfs_quarantined"] = self.conn.execute(
+            """
             SELECT COUNT(DISTINCT doi) FROM processing_log
             WHERE stage = 'verify_pdf' AND status = 'mismatch'
-        """).fetchone()[0]
+        """
+        ).fetchone()[0]
 
         # Wiki ingestion
-        stats["wiki_ingested"] = self.conn.execute("""
+        stats["wiki_ingested"] = self.conn.execute(
+            """
             SELECT COUNT(*) FROM wiki_pages WHERE status IN ('ingested', 'flagged')
-        """).fetchone()[0]
+        """
+        ).fetchone()[0]
 
         return stats
 
