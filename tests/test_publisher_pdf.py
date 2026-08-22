@@ -72,3 +72,15 @@ def test_login_page_detected_on_ezproxy_host():
 
 def test_regular_proxied_page_is_not_login():
     assert not is_login_page("<html><body>Article</body></html>", PROXIED_PAGE)
+
+
+def test_surfconext_credential_prompt_is_login():
+    html = '<form><input type="password" name="pass"></form>'
+    url = "https://engine.surfconext.nl/authentication/idp/single-sign-on/key:1?SAMLRequest=x"
+    assert is_login_page(html, url)
+
+
+def test_surfconext_account_chooser_is_not_login():
+    html = "<html><body>Select an account to login</body></html>"
+    url = "https://engine.surfconext.nl/authentication/idp/single-sign-on/key:1?SAMLRequest=x"
+    assert not is_login_page(html, url)

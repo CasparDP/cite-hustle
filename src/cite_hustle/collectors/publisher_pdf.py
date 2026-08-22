@@ -65,7 +65,12 @@ def is_login_page(html: str, current_url: str) -> bool:
     credential form (ERNA password field or SURFconext chooser).
     """
     netloc = urlparse(current_url).netloc
-    on_login_host = EZPROXY_DOMAIN_MARKER in netloc and not netloc.split(".", 1)[0].count("-")
     lower = html.lower()
     has_credentials_form = 'type="password"' in lower or "type='password'" in lower
+    # A real credential prompt on the SSO host (SURFconext/ADFS) means the ERNA
+    # session is gone. The SURFconext account *chooser* (no password field)
+    # auto-continues from the persisted session and must NOT be flagged.
+    if "surfconext" in netloc and has_credentials_form:
+        return True
+    on_login_host = EZPROXY_DOMAIN_MARKER in netloc and not netloc.split(".", 1)[0].count("-")
     return on_login_host and (has_credentials_form or "surfconext" in lower)

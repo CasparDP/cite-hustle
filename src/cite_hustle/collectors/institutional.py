@@ -10,10 +10,12 @@ import shutil
 import time
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.common.by import By
 
 from cite_hustle.collectors.http_pdf_downloader import doi_slug_filename
 from cite_hustle.collectors.publisher_pdf import (
@@ -61,6 +63,11 @@ class InstitutionalDownloader:
         chrome_options = ChromeOptions()
         chrome_options.add_argument(f"--user-data-dir={self.profile_dir}")
         chrome_options.add_argument("--window-size=1400,1000")
+        # Hide the automation fingerprint: ScienceDirect rejects requests that
+        # look webdriver-driven (cra_js_challenge) even for entitled sessions.
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
         if self.headless:
             chrome_options.add_argument("--headless=new")
         chrome_options.add_experimental_option(
@@ -73,6 +80,10 @@ class InstitutionalDownloader:
             },
         )
         self.driver = webdriver.Chrome(options=chrome_options)
+        self.driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+        )
         self.driver.set_page_load_timeout(self.page_timeout)
         return self.driver
 
@@ -96,15 +107,31 @@ class InstitutionalDownloader:
         except WebDriverException as exc:
             result.update(status="nav_error", error=str(exc)[:200])
             return result
-        time.sleep(3)  # let EZproxy redirects and the landing page settle
 
-        html, current = self.driver.page_source, self.driver.current_url
-        if is_login_page(html, current):
-            raise SessionExpired(current)
-
-        pdf_url = extract_pdf_url(html, current)
+        # EZproxy bounces new sessions through SURFconext SSO, which takes
+        # 10-15s to auto-complete from the persisted session. Poll until a PDF
+        # link appears, the login page shows, or the URL has settled on a
+        # proxied publisher page that genuinely offers no PDF.
+        pdf_url = None
+        current = None
+        deadline = time.time() + self.page_timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            html, previous, current = self.driver.page_source, current, self.driver.current_url
+            if is_login_page(html, current):
+                raise SessionExpired(current)
+            if "surfconext" in urlparse(current).netloc:
+                # The account chooser never auto-continues; click the EUR entry.
+                self._continue_surfconext()
+                continue
+            pdf_url = extract_pdf_url(html, current)
+            if pdf_url:
+                break
+            on_publisher = "-" in urlparse(current).netloc.split(".", 1)[0]
+            if on_publisher and current == previous:
+                break  # settled on a proxied publisher page with no PDF link
         if not pdf_url:
-            result.update(status="no_pdf_link", error=current[:200])
+            result.update(status="no_pdf_link", error=(current or url)[:200])
             return result
 
         result["pdf_url"] = pdf_url
@@ -115,6 +142,26 @@ class InstitutionalDownloader:
             return result
         result.update(status="downloaded", filepath=str(filepath))
         return result
+
+    def _continue_surfconext(self) -> bool:
+        """Click the Erasmus IdP entry on the SURFconext account chooser.
+
+        Only visible entries count: the chooser DOM carries hidden duplicates,
+        and clicking those does nothing. Returns True if an entry was clicked.
+        """
+        try:
+            # Only the wayf__idp tile is interactive; the [data-entityid]
+            # li.preselection wrapper matches the same text but eats clicks.
+            for el in self.driver.find_elements(By.CSS_SELECTOR, "div.wayf__idp, a.wayf__idp"):
+                if "erasmus" in (el.text or "").lower() and el.is_displayed():
+                    try:
+                        el.click()
+                    except WebDriverException:
+                        self.driver.execute_script("arguments[0].click();", el)
+                    return True
+        except WebDriverException:
+            pass
+        return False
 
     # ── Download handling ──────────────────────────────────────────────────
 
