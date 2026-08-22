@@ -1,5 +1,6 @@
 """InstitutionalDownloader behavior with a mocked Selenium driver."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -72,17 +73,45 @@ def test_download_via_browser_moves_pdf_to_storage(tmp_path):
 
 
 def test_download_via_browser_ignores_dotfiles(tmp_path):
-    """A Dropbox/Finder .DS_Store must not be mistaken for the download."""
+    """A Dropbox/Finder .DS_Store must not be mistaken for the download.
+
+    The dotfile is made the *newest* file, so without the dotfile filter the
+    max-by-mtime pick would return it and fail the %PDF- check.
+    """
     d = make_downloader(tmp_path)
     d.driver = MagicMock()
 
     def _get(url):
-        (d.temp_download_dir / ".DS_Store").write_bytes(b"\x00\x01")
-        (d.temp_download_dir / "S1-main.pdf").write_bytes(b"%PDF-1.7\nbody")
+        pdf = d.temp_download_dir / "S1-main.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nbody")
+        junk = d.temp_download_dir / ".DS_Store"
+        junk.write_bytes(b"\x00\x01")
+        newer = pdf.stat().st_mtime + 10
+        os.utime(junk, (newer, newer))
 
     d.driver.get.side_effect = _get
 
     assert d._download_via_browser("https://host/pdf", "10.1/x") == tmp_path / "10.1_x.pdf"
+
+
+def test_download_via_browser_clears_stale_partial_and_times_out(tmp_path):
+    """A leftover .crdownload is swept, and an empty temp dir times out."""
+    d = InstitutionalDownloader(
+        storage_dir=tmp_path,
+        profile_dir=tmp_path / "profile",
+        ezproxy_prefix="https://eur.idm.oclc.org/login?url=",
+        download_timeout=1,
+    )
+    d.driver = MagicMock()
+    d.driver.get.side_effect = lambda url: None  # nothing ever lands
+    stale = d.temp_download_dir / "foo.crdownload"
+    stale.write_bytes(b"partial")
+
+    with pytest.raises(RuntimeError, match="download_timeout"):
+        d._download_via_browser("https://host/pdf", "10.1/x")
+
+    assert not stale.exists()
+    assert not (tmp_path / "10.1_x.pdf").exists()
 
 
 def test_download_via_browser_rejects_non_pdf(tmp_path):
