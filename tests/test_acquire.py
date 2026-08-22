@@ -66,6 +66,9 @@ class FakeInstDownloader:
             raise r
         return r
 
+    def quit(self):
+        pass
+
 
 def _inst_result(doi, status, **kw):
     return {
@@ -215,3 +218,24 @@ def test_acquire_one_metadata_not_found(repo, monkeypatch):
     monkeypatch.setattr(acquire, "fetch_crossref_article", lambda doi: None)
     out = acquire.acquire_one(repo, "10.1/ghost", use_institutional=False, run_verify=False)
     assert out["status"] == "metadata_not_found"
+
+
+def test_acquire_one_session_expired(repo, monkeypatch):
+    add_article(repo, "10.1/expired")
+    monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
+    fake = FakeInstDownloader({"10.1/expired": SessionExpired("login")})
+    out = acquire.acquire_one(
+        repo, "10.1/expired", downloader_factory=lambda: fake, run_verify=False
+    )
+    assert out["status"] == "session_expired"
+
+
+def test_acquire_one_webdriver_abort_is_no_source(repo, monkeypatch):
+    add_article(repo, "10.1/browserdead")
+    monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
+    fake = FakeWebDriverRebuildFailsDownloader({"10.1/browserdead": "raise"})
+    out = acquire.acquire_one(
+        repo, "10.1/browserdead", downloader_factory=lambda: fake, run_verify=False
+    )
+    assert out["status"] == "no_source"
+    assert "webdriver" in out["detail"]
