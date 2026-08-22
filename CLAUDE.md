@@ -132,6 +132,8 @@ poetry run cite-hustle enrich-openalex --force --skip-fts-rebuild
 # Fallback PDF resolution (after SSRN fails: OpenAlex OA -> NBER -> arXiv)
 poetry run cite-hustle resolve-fallbacks --limit 200
 poetry run cite-hustle resolve-fallbacks --sources oa --recheck-days 90
+# --recheck-days governs no_match/downloaded rows only; status='error' rows
+# (e.g. transient failures) re-enter the pool after CITE_HUSTLE_ERROR_RECHECK_DAYS (2) instead
 
 # Verify downloaded PDFs match their article metadata (quarantines mismatches)
 poetry run cite-hustle verify-pdfs
@@ -147,6 +149,18 @@ poetry run cite-hustle wiki-index                    # regenerate index pages on
 poetry run cite-hustle pipeline --profile monthly
 poetry run cite-hustle pipeline --profile incremental
 poetry run cite-hustle pipeline --stages verify,ingest,index,fts
+
+# Per-DOI acquisition (metadata -> OA/NBER/arXiv fallbacks -> EZproxy institutional -> verify)
+poetry run cite-hustle get 10.1234/example.doi              # runner-only, takes the write lock
+poetry run cite-hustle get 10.1234/example.doi --no-institutional --no-verify
+
+# Queue a DOI from any machine (never opens the DB); runner drains it via the pipeline
+poetry run cite-hustle request 10.1234/example.doi --note "for lit review"
+poetry run cite-hustle process-requests   # runner-only: drain requests.jsonl manually
+
+# EZproxy institutional PDF resolution (after SSRN + OA/NBER/arXiv fallbacks failed)
+poetry run cite-hustle institutional --limit 50 --delay 10
+poetry run cite-hustle login              # one-time headful ERNA/EZproxy login; rerun on session_expired
 
 # Utilities
 poetry run cite-hustle status          # Database statistics
@@ -272,7 +286,7 @@ ssrn_pages (doi PK/FK, ssrn_url, ssrn_id, html_content, html_file_path, abstract
 processing_log (id PK, doi, stage, status, error_message, processed_at)
 
 -- Any-source PDF pipeline (added 2026-07)
-pdf_files (doi PK/FK, source 'ssrn'|'nber'|'arxiv'|'oa', source_url, pdf_url, pdf_file_path,
+pdf_files (doi PK/FK, source 'ssrn'|'nber'|'arxiv'|'oa'|'ezproxy', source_url, pdf_url, pdf_file_path,
            match_score, downloaded_at, verify_status 'pending'|'match'|'mismatch'|'uncertain'|'unreadable',
            verify_method, verify_score, verify_model, verify_reason, verified_at)
 pdf_candidates (doi+source PK, candidate_url, pdf_url, match_score, status, error_message, checked_at)
@@ -308,6 +322,11 @@ CITE_HUSTLE_CROSSREF_EMAIL=your.email@example.com  # Polite pool for CrossRef AP
 CITE_HUSTLE_DROPBOX_BASE=/custom/path              # Override default storage location
 CITE_HUSTLE_CRAWL_DELAY=10                         # Seconds between SSRN requests
 CITE_HUSTLE_SIMILARITY_THRESHOLD=90                # SSRN match threshold
+CITE_HUSTLE_EZPROXY_PREFIX=https://eur.idm.oclc.org/login?url=  # EZproxy URL prefix for institutional access
+CITE_HUSTLE_CHROME_PROFILE_DIR=/custom/path        # Persistent Chrome profile for the EZproxy session (default ~/.cache/cite-hustle/chrome-profile)
+CITE_HUSTLE_INSTITUTIONAL_BATCH=50                 # Articles per institutional resolution batch
+CITE_HUSTLE_INSTITUTIONAL_DELAY=10                 # Seconds between institutional article requests
+CITE_HUSTLE_ERROR_RECHECK_DAYS=2                   # Days before retrying an 'error'-status pdf_candidates row
 ```
 
 ## Code Style
@@ -377,3 +396,7 @@ poetry run python extract_abstracts_from_html.py
 - **Wiki lives at** `$HOME/Dropbox/Github Data/cite-hustle/wiki/` in process-paper format (`sources/`, `concepts/`, auto-generated `indexes/`); summaries are produced by the external process-paper skill (deep depth), never by reimplementing it here.
 - **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact); open-access only, no paywalled publisher scraping.
 - **PDF downloads need a visible browser on an unlocked screen** (SSRN Cloudflare/Turnstile): headless is blocked; headful clears only on an active, unlocked display. Run ad-hoc downloads manually (`caffeinate -i ... download --limit N`, resumable). Fully unattended scheduling works only on the dedicated runner laptop, which stays awake, logged in, and never locks. An overnight scheduler on a locked screen was tried and removed (2026-06); the runner-laptop design (2026-07) re-enabled it under those conditions. See `deploy/README.md`.
+- **EZproxy-first institutional access** (2026-08): BrowZine/LibKey deferred from v1 -- the Third Iron API returns 401 without a library-issued key, and libkey.io is a JS-only SPA whose robots.txt disallows everything. EUR's LibKey/BrowZine library ID (2163) is recorded for later reference in case a key becomes available.
+- **Chrome profile for the EZproxy session** lives on local disk (`~/.cache/cite-hustle/chrome-profile` by default), never Dropbox -- authenticated cookies must not sync or be shared across machines.
+- **`requests.jsonl` queue is the only cross-machine write channel**: any machine can append a DOI request without opening the DB; only the runner (via `process-requests` or the pipeline's `requests` stage) reads and resolves it.
+- **Skill-only interface; MCP server deferred** (2026-08): the CLI is the service layer, documented by a `cite-hustle` skill in the dot-files repo. No long-running server or extra DuckDB connection.

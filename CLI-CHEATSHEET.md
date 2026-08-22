@@ -240,6 +240,135 @@ those are reported as "not available", not failures.
 
 ---
 
+## Institutional Acquisition & Requests
+
+### `get`
+
+Get one paper end-to-end: metadata -> OA/NBER/arXiv fallbacks -> EZproxy institutional -> verify.
+
+```bash
+cite-hustle get <doi> [OPTIONS]
+```
+
+**Options:**
+
+- `--no-institutional` - Skip the EZproxy browser stage
+- `--no-verify` - Skip immediate PDF verification
+
+**Examples:**
+
+```bash
+cite-hustle get 10.1234/example.doi
+cite-hustle get 10.1234/example.doi --no-institutional --no-verify
+```
+
+**What it does:**
+
+- Looks up or fetches CrossRef metadata for the DOI
+- Returns immediately if a verified local PDF already exists
+- Otherwise tries OA/NBER/arXiv fallback resolvers, then the EZproxy institutional resolver
+- Verifies the downloaded PDF against metadata (unless `--no-verify`)
+
+**When to use:** You want one specific paper right away, on the runner. Runner-only (takes the DB write lock).
+
+---
+
+### `request`
+
+Queue a DOI for acquisition by the runner. Works on any machine, never opens the DB.
+
+```bash
+cite-hustle request <doi> [OPTIONS]
+```
+
+**Options:**
+
+- `--note <text>` - Why you want this paper (lands in the queue entry)
+
+**Examples:**
+
+```bash
+cite-hustle request 10.1234/example.doi
+cite-hustle request 10.1234/example.doi --note "for lit review"
+```
+
+**What it does:**
+
+- Appends `{doi, requested_at, machine, note}` to `<dropbox_base>/requests.jsonl`
+- Idempotent: skips if the DOI is already queued
+
+**When to use:** You're on a read-only machine and want a paper fetched next time the runner drains the queue
+
+---
+
+### `process-requests`
+
+Drain the requests queue, acquiring each queued DOI end-to-end.
+
+```bash
+cite-hustle process-requests
+```
+
+**What it does:**
+
+- Runs the `get` flow for every DOI in `requests.jsonl`
+- Drops resolved and `metadata_not_found` DOIs from the queue
+- Keeps other failures queued with an incremented attempt count, dropped after 3 attempts
+
+**When to use:** Runner-only (takes the DB write lock). Runs automatically as the `requests` pipeline stage, or manually to drain the queue outside a scheduled run.
+
+---
+
+### `institutional`
+
+Fetch publisher PDFs through EUR's EZproxy, for articles where SSRN and OA/NBER/arXiv fallbacks failed.
+
+```bash
+cite-hustle institutional [OPTIONS]
+```
+
+**Options:**
+
+- `--limit <n>` - Limit number of articles
+- `--delay <seconds>` - Seconds between articles (default: `settings.institutional_delay`, 10)
+- `--recheck-days <n>` - Re-try `no_match` pairs after N days (default: `90`)
+- `--headless` / `--no-headless` - Run browser headless (default: visible; EZproxy usually needs a visible browser)
+
+**Examples:**
+
+```bash
+cite-hustle institutional --limit 50
+cite-hustle institutional --limit 20 --delay 15 --no-headless
+```
+
+**What it does:**
+
+- Selects articles with no PDF and all fallback sources already exhausted
+- Navigates each DOI through EZproxy in an authenticated browser and downloads the publisher PDF if found
+- Aborts the run with a clear message if the login session has expired
+
+**When to use:** Runner-only, after `resolve-fallbacks`. Needs a live session from `login`.
+
+---
+
+### `login`
+
+One-time EZproxy/ERNA login for institutional PDF downloads.
+
+```bash
+cite-hustle login
+```
+
+**What it does:**
+
+- Opens a visible Chrome window on the persistent profile and navigates through EZproxy
+- Waits for you to complete the ERNA login (including MFA) in the browser
+- Confirms the session landed on a publisher page, not the login page
+
+**When to use:** Runner-only, once initially, and again whenever a run aborts with `session_expired`
+
+---
+
 ## Search & Inspection
 
 ### `search`

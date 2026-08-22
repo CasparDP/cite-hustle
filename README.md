@@ -123,6 +123,29 @@ Key behavior:
 It is normal for some papers to be unavailable (the author never posted the full
 text). Those count as "not available", not failures.
 
+### Getting a specific paper
+
+For a single DOI, skip the batch pipeline and fetch it directly: metadata,
+then OA/NBER/arXiv fallbacks, then EZproxy institutional access, then
+verification.
+
+```bash
+# On the runner (needs the DB write lock)
+poetry run cite-hustle get 10.1234/example.doi
+
+# From any other machine: queue it, the runner picks it up next run
+poetry run cite-hustle request 10.1234/example.doi --note "for lit review"
+poetry run cite-hustle process-requests   # or drain the queue manually on the runner
+```
+
+Institutional access goes through EUR's EZproxy and needs a one-time login
+(and again whenever a run reports `session_expired`):
+
+```bash
+poetry run cite-hustle login
+poetry run cite-hustle institutional --limit 50   # batch EZproxy resolution
+```
+
 ### Search
 
 ```bash

@@ -1,9 +1,10 @@
-# Runner laptop deployment
+# Runner deployment
 
-The pipeline runs unattended on a dedicated Mac laptop (always awake, user
-logged in). SSRN's Cloudflare protection requires a **visible** Chrome window,
-so everything runs as a LaunchAgent inside the GUI session, never as a
-LaunchDaemon, and the screen must stay unlocked.
+The pipeline runs unattended on the dedicated runner machine (currently the
+user's M2 Mac; always awake, user logged in). SSRN's Cloudflare protection
+requires a **visible** Chrome window, so everything runs as a LaunchAgent
+inside the GUI session, never as a LaunchDaemon, and the screen must stay
+unlocked.
 
 ## Provisioning checklist
 
@@ -31,13 +32,21 @@ LaunchDaemon, and the screen must stay unlocked.
    ```bash
    poetry run cite-hustle wiki-ingest --limit 1
    ```
+7. One-time EZproxy/ERNA login for institutional PDF downloads (needed before
+   the `institutional` stage can run unattended):
+   ```bash
+   poetry run cite-hustle login
+   ```
+   Opens a visible Chrome window on a persistent profile; complete the ERNA
+   login (incl. MFA) manually, then press Enter. The session cookie persists
+   in the profile until it expires.
 
 ## Schedule
 
 | Job | When | Profile |
 |---|---|---|
-| `com.citehustle.monthly` | 2nd of the month, 09:00 | collect → scrape → enrich → download → fallbacks → verify → ingest → index → fts |
-| `com.citehustle.weekly` | Mon + Thu, 20:00 | scrape → download → fallbacks → verify → ingest → index → fts |
+| `com.citehustle.monthly` | 2nd of the month, 09:00 | requests → collect → scrape → enrich → download → fallbacks → institutional → verify → ingest → index → fts |
+| `com.citehustle.weekly` | Mon + Thu, 20:00 | requests → scrape → download → fallbacks → institutional → verify → ingest → index → fts |
 
 Manual trigger and logs:
 
@@ -52,7 +61,7 @@ machine.
 
 ## Single-writer discipline (DuckDB on Dropbox)
 
-**This laptop is the only machine that writes to the database.** Other
+**This machine is the only one that writes to the database.** Other
 machines should stick to read-only commands (`status`, `dashboard`, `search`,
 `sample`, `wiki-index`). While a pipeline run holds the write lock, read-only
 commands on other machines will wait/fail with the standard lock message; the
@@ -68,10 +77,25 @@ The pipeline refuses to start when it detects:
 A concurrent second pipeline run is blocked by a local lockfile at
 `~/.cache/cite-hustle/pipeline.lock`.
 
+## Session expiry (EZproxy)
+
+**Symptom:** the `institutional` stage (or `get`/`process-requests`) aborts
+with `session_expired` in the run report (`~/Dropbox/Github Data/cite-hustle/reports/`).
+
+**Fix:** run the login command headful on the runner and re-run:
+
+```bash
+poetry run cite-hustle login
+```
+
+The session cookie lives in the local Chrome profile
+(`~/.cache/cite-hustle/chrome-profile` by default) and is not synced via
+Dropbox, so this must be run on the runner machine itself.
+
 ## What runs where
 
 | Concern | Machine |
 |---|---|
-| Scheduled pipeline (writes) | Runner laptop |
+| Scheduled pipeline (writes) | Runner (M2 machine) |
 | Ad-hoc queries, wiki reading, deep-writer | Any machine (read-only) |
-| Manual maintenance scripts | Runner laptop, outside run windows |
+| Manual maintenance scripts | Runner (M2 machine), outside run windows |

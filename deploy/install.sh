@@ -42,6 +42,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # Secrets for the cite-hustle pipeline (sourced by run_pipeline.sh)
 OLLAMA_API_KEY=
 CITE_HUSTLE_CROSSREF_EMAIL=
+# CITE_HUSTLE_EZPROXY_PREFIX=https://eur.idm.oclc.org/login?url=
+# CITE_HUSTLE_INSTITUTIONAL_BATCH=50
 EOF
   chmod 600 "$ENV_FILE"
   echo "  ⚠ Created $ENV_FILE — fill in OLLAMA_API_KEY before the first run"
