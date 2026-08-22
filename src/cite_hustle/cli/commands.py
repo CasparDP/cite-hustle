@@ -1055,5 +1055,64 @@ def login():
         downloader.quit()
 
 
+@main.command("institutional")
+@click.option("--limit", default=None, type=int, help="Limit number of articles")
+@click.option("--delay", default=None, type=int, help="Seconds between articles")
+@click.option("--recheck-days", default=90, type=int, help="Re-try no_match pairs after N days")
+@click.option(
+    "--headless/--no-headless",
+    default=False,
+    help="EZproxy usually works headful; keep visible on the runner",
+)
+@click.pass_context
+def institutional(ctx, limit, delay, recheck_days, headless):
+    """Fetch publisher PDFs through EUR's EZproxy (after fallbacks failed).
+
+    Needs a live login session in the persistent Chrome profile; run
+    'cite-hustle login' once (and again whenever runs abort with
+    session_expired).
+    """
+    from datetime import datetime, timedelta
+
+    from cite_hustle import acquire
+    from cite_hustle.collectors.institutional import InstitutionalDownloader
+
+    repo = ctx.obj["repo"]
+    articles = repo.get_articles_for_institutional(limit=limit)
+    if articles.empty:
+        click.echo("✓ No articles pending institutional resolution")
+        return
+
+    cutoff = datetime.now() - timedelta(days=recheck_days)
+    error_cutoff = datetime.now() - timedelta(days=settings.error_recheck_days)
+    already_checked = repo.get_recent_candidate_checks(cutoff, error_cutoff)
+
+    downloader = InstitutionalDownloader(
+        storage_dir=settings.pdf_storage_dir,
+        profile_dir=settings.chrome_profile_dir,
+        ezproxy_prefix=settings.ezproxy_prefix,
+        headless=headless,
+    )
+    click.echo(f"🏛  Resolving {len(articles)} articles via EZproxy\n")
+    downloader.setup_webdriver()
+    try:
+        counts = acquire.run_institutional_batch(
+            repo,
+            downloader,
+            articles,
+            delay=delay if delay is not None else settings.institutional_delay,
+            already_checked=already_checked,
+        )
+    finally:
+        downloader.quit()
+
+    click.echo(
+        f"\n✓ Institutional resolution: {counts['downloaded']} downloaded, "
+        f"{counts['no_match']} without a PDF link, {counts['error']} errors"
+    )
+    if counts["aborted"]:
+        click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
+
+
 if __name__ == "__main__":
     main(obj={})
