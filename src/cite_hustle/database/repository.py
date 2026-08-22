@@ -416,6 +416,38 @@ class ArticleRepository:
             query += f" LIMIT {int(limit)}"
         return self.conn.execute(query).fetchdf()
 
+    def get_articles_for_institutional(self, limit: Optional[int] = None) -> pd.DataFrame:
+        """Articles eligible for the EZproxy institutional resolver.
+
+        Same base predicate as get_articles_without_pdf, plus: the open-access
+        fallback stage must already have tried (any oa/nber/arxiv candidate row),
+        so the expensive browser path runs last.
+        """
+        query = """
+            SELECT a.doi, a.title, a.authors, a.year, a.journal_name
+            FROM articles a
+            LEFT JOIN pdf_files p ON a.doi = p.doi
+            LEFT JOIN ssrn_pages s ON a.doi = s.doi
+            WHERE p.doi IS NULL
+              AND (
+                  s.ssrn_url IS NULL
+                  OR EXISTS (
+                      SELECT 1 FROM processing_log pl
+                      WHERE pl.doi = a.doi
+                        AND pl.stage = 'download_pdf'
+                        AND pl.status = 'unavailable'
+                  )
+              )
+              AND EXISTS (
+                  SELECT 1 FROM pdf_candidates c
+                  WHERE c.doi = a.doi AND c.source IN ('oa', 'nber', 'arxiv')
+              )
+            ORDER BY a.year DESC
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query).fetchdf()
+
     def get_recent_candidate_checks(self, no_match_cutoff, error_cutoff) -> set:
         """(doi, source) pairs to skip: recent no_match/downloaded, or recent errors.
 

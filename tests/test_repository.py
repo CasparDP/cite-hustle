@@ -33,3 +33,15 @@ def test_recheck_windows_distinguish_error_from_no_match(repo):
 
     both_recent = repo.get_recent_candidate_checks(long_cutoff, long_cutoff)
     assert ("10.1/b", "oa") in both_recent
+
+
+def test_institutional_feeder_requires_fallbacks_tried(repo):
+    add_article(repo, "10.1/tried")  # fallbacks tried, no PDF -> eligible
+    add_article(repo, "10.1/untried")  # fallbacks never tried -> not eligible
+    add_article(repo, "10.1/haspdf")  # already has a PDF -> not eligible
+    repo.record_pdf_candidate("10.1/tried", "oa", status="no_match")
+    repo.record_pdf_candidate("10.1/haspdf", "oa", status="downloaded")
+    repo.upsert_pdf_file("10.1/haspdf", "oa", None, "http://x/y.pdf", "/tmp/y.pdf")
+
+    dois = set(repo.get_articles_for_institutional()["doi"])
+    assert dois == {"10.1/tried"}
