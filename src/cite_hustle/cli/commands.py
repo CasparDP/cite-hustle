@@ -692,8 +692,8 @@ def wiki_ingest(ctx, limit, dry_run, refresh, keys):
     "--stages",
     "stages_csv",
     default=None,
-    help="Comma-separated stage subset (collect,scrape,enrich,download,"
-    "fallbacks,verify,ingest,index,fts)",
+    help="Comma-separated stage subset (requests,collect,scrape,enrich,download,"
+    "fallbacks,institutional,verify,ingest,index,fts)",
 )
 @click.option("--year", default=None, type=int, help="Target year (default: current year)")
 @click.option("--report/--no-report", default=True, help="Write a markdown run report")
@@ -723,6 +723,7 @@ def pipeline(ctx, profile, stages_csv, year, report):
         raise click.BadParameter(f"Unknown stages: {unknown}")
 
     stage_invokes = {
+        "requests": lambda: ctx.invoke(process_requests),
         "collect": lambda: ctx.invoke(
             collect,
             field="all",
@@ -737,6 +738,7 @@ def pipeline(ctx, profile, stages_csv, year, report):
         ),
         "download": lambda: ctx.invoke(download),
         "fallbacks": lambda: ctx.invoke(resolve_fallbacks, limit=settings.fallback_batch),
+        "institutional": lambda: ctx.invoke(institutional, limit=settings.institutional_batch),
         "verify": lambda: ctx.invoke(verify_pdfs),
         "ingest": lambda: ctx.invoke(wiki_ingest),
         "index": lambda: ctx.invoke(wiki_index),

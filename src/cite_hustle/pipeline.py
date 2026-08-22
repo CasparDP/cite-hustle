@@ -20,17 +20,29 @@ from cite_hustle.database.repository import ArticleRepository
 # Stage order per profile. Names map to CLI subcommands in cli/commands.py.
 PROFILES = {
     "monthly": [
+        "requests",
         "collect",
         "scrape",
         "enrich",
         "download",
         "fallbacks",
+        "institutional",
         "verify",
         "ingest",
         "index",
         "fts",
     ],
-    "incremental": ["scrape", "download", "fallbacks", "verify", "ingest", "index", "fts"],
+    "incremental": [
+        "requests",
+        "scrape",
+        "download",
+        "fallbacks",
+        "institutional",
+        "verify",
+        "ingest",
+        "index",
+        "fts",
+    ],
 }
 
 # Stages whose failure aborts the run (later stages depend on their output)
