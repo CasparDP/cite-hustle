@@ -517,7 +517,8 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
         return
 
     cutoff = datetime.now() - timedelta(days=recheck_days)
-    already_checked = repo.get_recent_candidate_checks(cutoff)
+    error_cutoff = datetime.now() - timedelta(days=settings.error_recheck_days)
+    already_checked = repo.get_recent_candidate_checks(cutoff, error_cutoff)
     resolvers = {
         name: RESOLVERS[name](threshold=settings.similarity_threshold) for name in source_order
     }

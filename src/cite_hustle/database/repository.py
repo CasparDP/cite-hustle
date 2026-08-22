@@ -416,10 +416,19 @@ class ArticleRepository:
             query += f" LIMIT {int(limit)}"
         return self.conn.execute(query).fetchdf()
 
-    def get_recent_candidate_checks(self, cutoff) -> set:
-        """Get (doi, source) pairs already checked since cutoff (datetime)."""
+    def get_recent_candidate_checks(self, no_match_cutoff, error_cutoff) -> set:
+        """(doi, source) pairs to skip: recent no_match/downloaded, or recent errors.
+
+        Errors get their own (shorter) window so an auth-shaped failure does not
+        suppress retries for the full recheck period.
+        """
         rows = self.conn.execute(
-            "SELECT doi, source FROM pdf_candidates WHERE checked_at >= ?", [cutoff]
+            """
+            SELECT doi, source FROM pdf_candidates
+            WHERE (status = 'error' AND checked_at >= ?)
+               OR (status != 'error' AND checked_at >= ?)
+        """,
+            [error_cutoff, no_match_cutoff],
         ).fetchall()
         return set(rows)
 
