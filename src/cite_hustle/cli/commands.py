@@ -1182,12 +1182,18 @@ def process_requests(ctx):
         f"\n✓ Processed requests: {counts['resolved']} resolved, "
         f"{counts['kept']} kept, {counts['dropped']} dropped"
     )
-    if counts["halted_reason"] == "session_expired":
+    halted_reason = counts["halted_reason"]
+    if halted_reason == "session_expired":
         click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
-    elif counts["halted_reason"] == "browser_error":
+    elif halted_reason == "browser_error":
         click.echo(
             "✗ Browser failed to start or died; check Chrome/chromedriver on this "
             "machine and re-run"
+        )
+    elif halted_reason and halted_reason.startswith("error:"):
+        click.echo(
+            f"✗ Drain halted on an unexpected error: {halted_reason}; "
+            "queue preserved, re-run later"
         )
 
 

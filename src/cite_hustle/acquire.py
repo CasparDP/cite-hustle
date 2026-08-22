@@ -379,16 +379,23 @@ def acquire_one(
 def drain_requests(repo, acquire_fn=None) -> dict:
     """Drain the requests queue, acquiring each queued DOI.
 
-    Resolved entries (already_have/downloaded) are dropped. metadata_not_found
-    entries are dropped and logged as a failed "request" stage. Other failures
-    get attempts += 1 and are kept, unless attempts reaches 3, in which case
-    they are dropped and logged as gave_up_after_3. A session_expired or
-    browser_error result stops draining immediately, leaving the current entry
-    and all remaining entries in the queue unchanged (no attempts bump for the
-    halting entry). The queue is always rewritten atomically via
+    Resolved entries (already_have/downloaded, unless verify_status is
+    "mismatch") are dropped. metadata_not_found entries are dropped and
+    logged as a failed "request" stage. Other failures -- including a
+    downloaded-but-mismatch result, which means the verifier quarantined the
+    wrong PDF -- get attempts += 1 and are kept, unless attempts reaches 3,
+    in which case they are dropped and logged as gave_up_after_3. A
+    session_expired or browser_error result stops draining immediately,
+    leaving the current entry and all remaining entries in the queue
+    unchanged (no attempts bump for the halting entry). An unexpected
+    exception from acquire_fn is treated the same way: the current entry and
+    all remaining entries are kept unchanged and halted_reason is set to
+    "error: <exc>" (no attempts bump -- the failure is infrastructural, not
+    paper-level). The queue is always rewritten atomically via
     write_requests. Returns
     {"resolved", "kept", "dropped", "session_expired", "halted_reason"}, where
-    halted_reason is None, "session_expired", or "browser_error".
+    halted_reason is None, "session_expired", "browser_error", or an
+    "error: ..." string.
     """
     if acquire_fn is None:
         acquire_fn = acquire_one
@@ -405,7 +412,12 @@ def drain_requests(repo, acquire_fn=None) -> dict:
     remaining = []
     for i, entry in enumerate(entries):
         doi = entry["doi"]
-        result = acquire_fn(repo, doi)
+        try:
+            result = acquire_fn(repo, doi)
+        except Exception as exc:
+            counts["halted_reason"] = f"error: {exc}"[:120]
+            remaining.extend(entries[i:])
+            break
         status = result["status"]
 
         if status in ("session_expired", "browser_error"):
@@ -413,7 +425,7 @@ def drain_requests(repo, acquire_fn=None) -> dict:
             counts["session_expired"] = status == "session_expired"
             remaining.extend(entries[i:])
             break
-        elif status in ("already_have", "downloaded"):
+        elif status in ("already_have", "downloaded") and result.get("verify_status") != "mismatch":
             counts["resolved"] += 1
         elif status == "metadata_not_found":
             repo.log_processing(doi, "request", "failed", "metadata_not_found")

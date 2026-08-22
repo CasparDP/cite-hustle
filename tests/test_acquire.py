@@ -418,6 +418,45 @@ def test_drain_requests_session_expired_leaves_queue_untouched(repo, tmp_path, m
     assert after_from_b == before_from_b  # b and c rewritten byte-identical to the original
 
 
+def test_drain_requests_unexpected_exception_preserves_queue(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/a")
+    rq.append_request("10.1/b")
+    rq.append_request("10.1/c")
+
+    def fake_acquire(repo_, doi):
+        if doi == "10.1/a":
+            return _drain_result(doi, "downloaded")
+        raise RuntimeError("crossref 500")
+
+    counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
+    assert counts["resolved"] == 1
+    assert counts["halted_reason"].startswith("error:")
+
+    remaining = rq.read_requests()
+    assert [e["doi"] for e in remaining] == ["10.1/b", "10.1/c"]
+    assert remaining[0]["attempts"] == 0
+    assert remaining[1]["attempts"] == 0
+
+
+def test_drain_requests_downloaded_mismatch_is_kept_not_resolved(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/a")
+
+    def fake_acquire(repo_, doi):
+        result = _drain_result(doi, "downloaded")
+        result["verify_status"] = "mismatch"
+        return result
+
+    counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
+    assert counts["kept"] == 1
+    assert counts["resolved"] == 0
+
+    remaining = rq.read_requests()
+    assert [e["doi"] for e in remaining] == ["10.1/a"]
+    assert remaining[0]["attempts"] == 1
+
+
 def test_drain_requests_browser_error_leaves_queue_untouched(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
     rq.append_request("10.1/a")
