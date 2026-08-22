@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import httpx
 from conftest import add_article
 from selenium.common.exceptions import WebDriverException
 
@@ -230,6 +231,38 @@ def test_acquire_one_session_expired(repo, monkeypatch):
     assert out["status"] == "session_expired"
 
 
+class FakeQuarantiningVerifier:
+    """Stands in for PDFVerifier: verify_batch quarantines (drops the row)."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def verify_batch(self, rows):
+        for doi in rows["doi"]:
+            self.kwargs["repo"].delete_pdf_file(doi)
+        return {"match": 0, "mismatch": len(rows), "uncertain": 0, "unreadable": 0}
+
+
+def test_acquire_one_reports_mismatch_when_verifier_quarantines(repo, tmp_path, monkeypatch):
+    add_article(repo, "10.1/bad")
+    monkeypatch.setattr(acquire.settings, "dropbox_base", tmp_path)
+
+    def fake_try_sources(repo_, article, *a, **k):
+        repo_.upsert_pdf_file(
+            article["doi"], "oa", None, "http://x/y.pdf", str(tmp_path / "bad.pdf")
+        )
+        return "oa"
+
+    monkeypatch.setattr(acquire, "try_sources_for_article", fake_try_sources)
+    monkeypatch.setattr("cite_hustle.verifier.PDFVerifier", FakeQuarantiningVerifier)
+
+    out = acquire.acquire_one(repo, "10.1/bad", use_institutional=False, run_verify=True)
+    assert out["status"] == "downloaded"
+    assert out["verify_status"] == "mismatch"
+    assert out["path"] is None
+    assert out["detail"] is None  # the verification step did not error out
+
+
 def test_acquire_one_webdriver_abort_is_no_source(repo, monkeypatch):
     add_article(repo, "10.1/browserdead")
     monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
@@ -239,3 +272,53 @@ def test_acquire_one_webdriver_abort_is_no_source(repo, monkeypatch):
     )
     assert out["status"] == "no_source"
     assert "webdriver" in out["detail"]
+
+
+def _crossref_response(status, payload):
+    """A canned httpx.Response as acquire.httpx.get would return it."""
+    return httpx.Response(
+        status, json=payload, request=httpx.Request("GET", "https://api.crossref.org/works/10.1/x")
+    )
+
+
+def test_fetch_crossref_article_404_returns_none(monkeypatch):
+    monkeypatch.setattr(acquire.httpx, "get", lambda *a, **k: _crossref_response(404, {}))
+    assert acquire.fetch_crossref_article("10.1/ghost") is None
+
+
+def test_fetch_crossref_article_maps_fields(monkeypatch):
+    payload = {
+        "message": {
+            "title": ["Earnings <i>Management</i> &amp; Audit Quality"],
+            "author": [
+                {"given": "Alice", "family": "Smith"},
+                {"given": "Bob", "family": "Jones"},
+            ],
+            "issued": {"date-parts": [[2024, 5, 1]]},
+            "ISSN": ["1475-679X", "0021-8456"],
+            "container-title": ["Journal of Accounting Research", "JAR"],
+            "publisher": "Wiley",
+        }
+    }
+    monkeypatch.setattr(acquire.httpx, "get", lambda *a, **k: _crossref_response(200, payload))
+    assert acquire.fetch_crossref_article("10.1/x") == {
+        "doi": "10.1/x",
+        "title": "Earnings Management & Audit Quality",
+        "authors": "Alice Smith; Bob Jones",
+        "year": 2024,
+        "journal_issn": "1475-679X",
+        "journal_name": "Journal of Accounting Research",
+        "publisher": "Wiley",
+    }
+
+
+def test_fetch_crossref_article_null_date_parts_returns_none(monkeypatch):
+    payload = {"message": {"title": ["T"], "issued": {"date-parts": [[None]]}}}
+    monkeypatch.setattr(acquire.httpx, "get", lambda *a, **k: _crossref_response(200, payload))
+    assert acquire.fetch_crossref_article("10.1/x") is None
+
+
+def test_fetch_crossref_article_missing_title_returns_none(monkeypatch):
+    payload = {"message": {"issued": {"date-parts": [[2024]]}}, "publisher": "P"}
+    monkeypatch.setattr(acquire.httpx, "get", lambda *a, **k: _crossref_response(200, payload))
+    assert acquire.fetch_crossref_article("10.1/x") is None

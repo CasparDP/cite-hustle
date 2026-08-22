@@ -202,7 +202,8 @@ def fetch_crossref_article(doi: str) -> Optional[dict]:
     """Fetch one article's metadata from CrossRef by DOI.
 
     Returns the article dict, or None if CrossRef does not know the DOI (404)
-    or the record has no publication year. Other HTTP errors propagate.
+    or the record has no usable title or publication year. Other HTTP errors
+    propagate.
     """
     from cite_hustle.collectors.metadata import MetadataCollector
 
@@ -223,9 +224,13 @@ def fetch_crossref_article(doi: str) -> Optional[dict]:
     if year is None:
         return None
 
+    title = MetadataCollector.clean_title(" ".join(msg.get("title") or []))
+    if not title:
+        return None
+
     return {
         "doi": doi,
-        "title": MetadataCollector.clean_title(" ".join(msg.get("title") or [])),
+        "title": title,
         "authors": "; ".join(
             f"{a.get('given', '')} {a.get('family', '')}".strip() for a in msg.get("author", [])
         ),
