@@ -11,8 +11,9 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-import undetected_chromedriver as uc
+from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 from cite_hustle.collectors.http_pdf_downloader import doi_slug_filename
 from cite_hustle.collectors.publisher_pdf import (
@@ -54,9 +55,14 @@ class InstitutionalDownloader:
     # ── Browser lifecycle ──────────────────────────────────────────────────
 
     def setup_webdriver(self):
-        chrome_options = uc.ChromeOptions()
+        # Plain Selenium, not undetected-chromedriver: EZproxy/publisher pages
+        # need no Cloudflare evasion, and Selenium Manager keeps the driver
+        # matched to the installed Chrome (uc 3.5.5 broke against Chrome 151).
+        chrome_options = ChromeOptions()
         chrome_options.add_argument(f"--user-data-dir={self.profile_dir}")
         chrome_options.add_argument("--window-size=1400,1000")
+        if self.headless:
+            chrome_options.add_argument("--headless=new")
         chrome_options.add_experimental_option(
             "prefs",
             {
@@ -66,11 +72,7 @@ class InstitutionalDownloader:
                 "plugins.always_open_pdf_externally": True,
             },
         )
-        kwargs = {"options": chrome_options, "headless": self.headless}
-        major = SeleniumPDFDownloader._detect_chrome_major_version()
-        if major is not None:
-            kwargs["version_main"] = major
-        self.driver = uc.Chrome(**kwargs)
+        self.driver = webdriver.Chrome(options=chrome_options)
         self.driver.set_page_load_timeout(self.page_timeout)
         return self.driver
 
