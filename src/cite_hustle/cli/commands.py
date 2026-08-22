@@ -507,8 +507,8 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
 
     import httpx
 
-    from cite_hustle.collectors.fallback_resolvers import RESOLVERS, ResolverError
-    from cite_hustle.collectors.http_pdf_downloader import doi_slug_filename, download_pdf
+    from cite_hustle import acquire
+    from cite_hustle.collectors.fallback_resolvers import RESOLVERS
 
     repo = ctx.obj["repo"]
 
@@ -538,59 +538,14 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
         for _, row in articles.iterrows():
             article = row.to_dict()
             doi = article["doi"]
-            resolved = False
 
-            for name in source_order:
-                if (doi, name) in already_checked:
-                    continue
-
-                try:
-                    candidate = resolvers[name].resolve(client, article)
-                except ResolverError as exc:
-                    repo.record_pdf_candidate(doi, name, status="error", error_message=str(exc))
-                    continue
-
-                if candidate is None:
-                    repo.record_pdf_candidate(doi, name, status="no_match")
-                    continue
-
-                dest = settings.pdf_storage_dir / doi_slug_filename(doi)
-                success, error = download_pdf(candidate.pdf_url, dest)
-                if not success:
-                    repo.record_pdf_candidate(
-                        doi,
-                        name,
-                        candidate_url=candidate.candidate_url,
-                        pdf_url=candidate.pdf_url,
-                        match_score=candidate.match_score,
-                        status="error",
-                        error_message=error,
-                    )
-                    continue
-
-                repo.record_pdf_candidate(
-                    doi,
-                    name,
-                    candidate_url=candidate.candidate_url,
-                    pdf_url=candidate.pdf_url,
-                    match_score=candidate.match_score,
-                    status="downloaded",
-                )
-                repo.upsert_pdf_file(
-                    doi=doi,
-                    source=name,
-                    source_url=candidate.candidate_url,
-                    pdf_url=candidate.pdf_url,
-                    pdf_file_path=str(dest),
-                    match_score=candidate.match_score,
-                )
-                repo.log_processing(doi, "resolve_fallback", "success", None)
-                click.echo(f"  ✓ {doi}: {name} ({candidate.match_score:.0f})")
+            won = acquire.try_sources_for_article(
+                repo, article, source_order, resolvers, client, already_checked
+            )
+            if won:
+                click.echo(f"  ✓ {doi}: {won}")
                 found += 1
-                resolved = True
-                break
-
-            if not resolved:
+            else:
                 misses += 1
             # arXiv asks for ~3s between requests; --delay covers all sources
             time_module.sleep(delay)
