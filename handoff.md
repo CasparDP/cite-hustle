@@ -1,48 +1,49 @@
-# Handoff
+# cite-hustle session handoff
 
-Status doc for cross-session continuity. Newest session first.
+Updated: 2026-08-22 (institutional-acquisition session, Fable orchestrating)
 
-## 2026-08-05: Cloudflare block diagnosis + scraper hardening
+## Done this session (all on `main`, verified)
 
-**Done and verified** (commit `a44b814`, pushed):
+- **Institutional acquisition shipped and live-tested**: `get <doi>` / `request <doi>` /
+  `process-requests` / `institutional` / `login` commands; EZproxy resolver with persistent
+  Chrome profile (`~/.cache/cite-hustle/chrome-profile`); `requests` + `institutional`
+  pipeline stages; status-aware recheck (`error` rows retry after 2 days); `cite-hustle`
+  skill in dot-files (synced + symlinked). 64+ tests passing. Spec/plan in
+  `docs/superpowers/`; pi cross-model report in `quality_reports/`.
+- **Live validation on the runner (M2)**: Wiley `10.1111/jofi.70055` and OUP
+  `10.1093/rfs/hhag032` downloaded via EZproxy and verifier-`match`ed, fully unattended.
+  SURFconext chooser is auto-clicked (visible `div.wayf__idp` with "erasmus universi";
+  never "Erasmus MC"); Microsoft SSO silent (user chose "stay signed in" at `login`).
+- **Institutional path migrated to plain Selenium** (Selenium Manager auto-matches
+  chromedriver, Chrome auto-updates safe). undetected-chromedriver 3.5.5 is dead vs
+  Chrome 136+ machine-wide.
+- pypdf restored to the venv (was missing after the py3.11 rebuild; had silently blocked
+  ALL PDF verification -> ~1050-row pending backlog).
+- seleniumbase added (pytest bumped to 9.x for it); UC mode probe-verified to launch on
+  Chrome 151. Use `uc_open_with_reconnect(url)`, NOT `.get()` (hits "no such window").
 
-- Diagnosed why `scrape` was getting blocked on the dev machine. Root cause: the IP is
-  challenge-flagged by Cloudflare (a plain `curl` to papers.ssrn.com returns an instant 403
-  challenge page). In that state Chrome hangs in a challenge loop, Selenium's client gave up
-  at 120s with `ReadTimeoutError`, and the old code retried blindly 4x per article
-  (~9 min/article, confirmed in a live 40-paper diagnostic run: 531 s/article, 5/5 failed).
-- Historical evidence: 335 `ERROR_*.png` screenshots in `ssrn_html/` show the interactive
-  Turnstile checkbox page. Old detection false-positived on normal pages and false-passed on
-  real challenges (`__cf_bm` is set on every Cloudflare response). Some past
-  "No search results found" failures were masked blocks.
-- Hardened `ssrn_scraper.py`: content-marker challenge detection, resolution judged by the
-  page changing (never cookies), operator prompt for the Turnstile checkbox in headful mode,
-  45s page-load timeout, block-error classification (no per-article retries), run-level
-  circuit breaker (abort after 3 consecutive block failures), distinct "No results (timeout)"
-  DB label, CLI `--delay` default 5 -> 20.
-- 12 tests pass (`tests/test_ssrn_blocking.py` is new). Cross-model review (pi/glm-5.2):
-  SOUND, 80/100; triage in `quality_reports/2026-08-05_pi_review_ssrn_cloudflare_hardening.md`.
-  Kept as intentional: 3-strike abort pacing; abort threshold not CLI-configurable.
+## Open items
 
-**Known state of the world:**
+1. **SSRN scrape/download is broken machine-wide** (uc cannot start Chrome 151): the next
+   scheduled pipeline's scrape/download stages will fail. Migrate
+   `collectors/ssrn_scraper.py` + `collectors/selenium_pdf_downloader.py` to SeleniumBase
+   UC mode. Cloudflare behavior is pinned by `tests/test_ssrn_blocking.py` (must stay
+   green). See CLAUDE.md Troubleshooting rows added this session.
+2. **Elsevier/ScienceDirect blocked**: `cra_js_challenge` defeats plain Selenium (incl.
+   stealth flags) and SB-UC (which also triggers a fresh Microsoft sign-in as a "new
+   device"). Fix candidates: dedicated SB-UC login round, or Elsevier API + eduVPN.
+   Failed candidates auto-retry after `error_recheck_days` (2).
+3. **Verification backlog**: run `poetry run cite-hustle verify-pdfs` (overnight ok) to
+   drain ~1050 pending rows; needs `OLLAMA_API_KEY` for gray-zone cases.
+4. `git push` pending (main is far ahead of origin; secrets scan came back clean).
+5. Human-verified except: `request` from a second machine -> `process-requests` drain
+   (queue roundtrip untested cross-machine, unit-tested only).
 
-- Dev-machine IP remains challenge-flagged as of 2026-08-05; scraping throughput belongs on
-  the runner laptop (also the sanctioned single DB writer per `deploy/README.md`).
-- The hardened code is NOT yet exercised against a live challenge end-to-end (the diagnostic
-  run predated the fix). First real run should be watched.
-- DB in Dropbox last written 2026-07-24; ~9,895 articles pending SSRN scrape.
-- Scrape wrote 5 diagnostic failure rows on 2026-08-05 (`ReadTimeoutError`); they have
-  `ssrn_pages` entries, so they will not be retried until reset via
-  `scripts/reset_failed_scrapes.py` (which does not yet match "Browser unresponsive" or
-  "No results (timeout)" patterns).
+## Key facts the next session should not re-derive
 
-**Next steps:**
-
-1. Validate the hardening with a small headful run (`scrape --limit 5 --no-headless`),
-   ideally on the runner laptop; on the dev machine expect either a checkbox prompt or a
-   clean abort within minutes.
-2. Consider extending `scripts/reset_failed_scrapes.py` to also reset the new block-type
-   error messages ("Browser unresponsive", "No results (timeout)", "Cloudflare challenge")
-   so recovered IPs can retry those DOIs.
-3. Optionally port the same challenge-detection rework to `selenium_pdf_downloader.py`,
-   which still has its own older Cloudflare handling.
+- Runner = the M2 machine; single-writer discipline; other machines read-only.
+- EZproxy prefix `https://eur.idm.oclc.org/login?url=`; EUR LibKey ID 2163 (deferred).
+- `login` session lives in the local Chrome profile, never Dropbox; on `session_expired`
+  rerun `cite-hustle login`; "browser died" abort = Chrome/driver trouble, not auth.
+- docling remains the wiki-ingestion driver (process-paper skill); pypdf is only the
+  verifier's cheap text sniff.
