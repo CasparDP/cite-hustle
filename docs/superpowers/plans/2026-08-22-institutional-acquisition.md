@@ -671,7 +671,9 @@ class InstitutionalDownloader:
 
 - [ ] **Step 5: Run** — `poetry run pytest tests/ -v` → PASS. **Step 6: Format + commit** — `git commit -am "feat: InstitutionalDownloader with persistent Chrome profile"`
 
----### Task 7: Request queue + `request` command + `NO_DB_COMMANDS`
+---
+
+### Task 7: Request queue + `request` command + `NO_DB_COMMANDS`
 
 **Files:**
 - Create: `src/cite_hustle/requests_queue.py`
