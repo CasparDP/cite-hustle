@@ -1068,5 +1068,37 @@ def request_paper(doi, note):
         click.echo(f"ℹ️  {doi} is already queued")
 
 
+@main.command("login")
+def login():
+    """One-time EZproxy/ERNA login for institutional PDF downloads.
+
+    Opens a visible Chrome on the persistent profile and navigates through
+    EZproxy. Complete the ERNA login (incl. MFA) in the browser, then press
+    Enter here. The session cookie persists in the profile, so scheduled
+    institutional runs work unattended until it expires.
+    """
+    from cite_hustle.collectors.institutional import InstitutionalDownloader
+    from cite_hustle.collectors.publisher_pdf import is_login_page
+
+    downloader = InstitutionalDownloader(
+        storage_dir=settings.pdf_storage_dir,
+        profile_dir=settings.chrome_profile_dir,
+        ezproxy_prefix=settings.ezproxy_prefix,
+        headless=False,
+    )
+    downloader.setup_webdriver()
+    try:
+        downloader.driver.get(settings.ezproxy_prefix + settings.login_probe_url)
+        click.echo("🌐 Complete the ERNA login in the browser window (incl. MFA).")
+        click.pause("   Press any key here once the publisher page has loaded...")
+        html, current = downloader.driver.page_source, downloader.driver.current_url
+        if is_login_page(html, current):
+            click.echo("✗ Still on the login page; session NOT established. Try again.")
+            sys.exit(1)
+        click.echo(f"✓ Session established (landed on {current.split('?')[0]})")
+    finally:
+        downloader.quit()
+
+
 if __name__ == "__main__":
     main(obj={})
