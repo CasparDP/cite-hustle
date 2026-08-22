@@ -7,16 +7,18 @@ All user-facing output stays in the CLI.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import pandas as pd
 from selenium.common.exceptions import WebDriverException
 
-from cite_hustle.collectors.fallback_resolvers import ResolverError
+from cite_hustle.collectors.fallback_resolvers import RESOLVERS, ResolverError
 from cite_hustle.collectors.http_pdf_downloader import doi_slug_filename, download_pdf
-from cite_hustle.collectors.institutional import SessionExpired
+from cite_hustle.collectors.institutional import InstitutionalDownloader, SessionExpired
 from cite_hustle.collectors.publisher_pdf import build_ezproxy_url
 from cite_hustle.config import settings
 
@@ -185,3 +187,180 @@ def run_institutional_batch(
         time.sleep(delay)
 
     return counts
+
+
+def _crossref_year(msg: dict) -> Optional[int]:
+    """Publication year from a CrossRef message, or None if it has none."""
+    for key in ("issued", "published-print", "published-online"):
+        parts = (msg.get(key) or {}).get("date-parts") or []
+        if parts and parts[0] and parts[0][0]:
+            return int(parts[0][0])
+    return None
+
+
+def fetch_crossref_article(doi: str) -> Optional[dict]:
+    """Fetch one article's metadata from CrossRef by DOI.
+
+    Returns the article dict, or None if CrossRef does not know the DOI (404)
+    or the record has no publication year. Other HTTP errors propagate.
+    """
+    from cite_hustle.collectors.metadata import MetadataCollector
+
+    params = {"mailto": settings.crossref_email} if settings.crossref_email else None
+    response = httpx.get(
+        f"https://api.crossref.org/works/{doi}",
+        params=params,
+        timeout=30.0,
+        headers={"User-Agent": "cite-hustle/0.1"},
+        follow_redirects=True,
+    )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+
+    msg = response.json()["message"]
+    year = _crossref_year(msg)
+    if year is None:
+        return None
+
+    return {
+        "doi": doi,
+        "title": MetadataCollector.clean_title(" ".join(msg.get("title") or [])),
+        "authors": "; ".join(
+            f"{a.get('given', '')} {a.get('family', '')}".strip() for a in msg.get("author", [])
+        ),
+        "year": year,
+        "journal_issn": (msg.get("ISSN") or [None])[0],
+        "journal_name": (msg.get("container-title") or [""])[0],
+        "publisher": msg.get("publisher", ""),
+    }
+
+
+def _default_downloader_factory():
+    """Build the real EZproxy downloader with a live webdriver."""
+    downloader = InstitutionalDownloader(
+        storage_dir=settings.pdf_storage_dir,
+        profile_dir=settings.chrome_profile_dir,
+        ezproxy_prefix=settings.ezproxy_prefix,
+        headless=False,
+    )
+    downloader.setup_webdriver()
+    return downloader
+
+
+def acquire_one(
+    repo,
+    doi: str,
+    downloader_factory=None,
+    use_institutional: bool = True,
+    run_verify: bool = True,
+) -> dict:
+    """Get one paper end-to-end: metadata -> OA fallbacks -> EZproxy -> verify.
+
+    Unlike the batch commands this ignores the pdf_candidates memo: a human
+    asked for this specific paper, so every source is tried fresh. Returns
+    {doi, status, source, path, verify_status, detail} with status one of
+    already_have / downloaded / metadata_not_found / no_source / session_expired.
+    """
+    out = {
+        "doi": doi,
+        "status": None,
+        "source": None,
+        "path": None,
+        "verify_status": None,
+        "detail": None,
+    }
+
+    article = repo.get_article_by_doi(doi)
+    if article is None:
+        fetched = fetch_crossref_article(doi)
+        if fetched is None:
+            out["status"] = "metadata_not_found"
+            return out
+        repo.insert_article(**fetched)
+        article = repo.get_article_by_doi(doi)
+
+    existing = repo.get_pdf_file_by_doi(doi)
+    if existing:
+        out.update(
+            status="already_have",
+            source=existing["source"],
+            path=existing["pdf_file_path"],
+            verify_status=existing["verify_status"],
+        )
+        return out
+
+    source_order = ["oa", "nber", "arxiv"]
+    resolvers = {
+        name: RESOLVERS[name](threshold=settings.similarity_threshold) for name in source_order
+    }
+    with httpx.Client(
+        timeout=30.0, headers={"User-Agent": "cite-hustle/0.1"}, follow_redirects=True
+    ) as client:
+        won = try_sources_for_article(repo, article, source_order, resolvers, client)
+
+    if not won and use_institutional:
+        factory = downloader_factory or _default_downloader_factory
+        try:
+            downloader = factory()
+        except Exception as exc:
+            out["status"] = "no_source"
+            out["detail"] = f"institutional browser setup failed: {exc}"[:200]
+            return out
+        try:
+            counts = run_institutional_batch(repo, downloader, pd.DataFrame([article]), delay=0)
+        finally:
+            downloader.quit()
+
+        if counts["abort_reason"] == "session_expired":
+            out["status"] = "session_expired"
+            out["detail"] = "EZproxy session expired"
+            return out
+        if counts["downloaded"]:
+            won = "ezproxy"
+        elif counts["abort_reason"]:
+            out["detail"] = f"institutional aborted: {counts['abort_reason']}"
+        elif counts["error"]:
+            out["detail"] = "institutional attempt failed"
+
+    if not won:
+        out["status"] = "no_source"
+        return out
+
+    row = repo.get_pdf_file_by_doi(doi)
+    out.update(
+        status="downloaded",
+        source=won,
+        path=row["pdf_file_path"] if row else None,
+        verify_status=row["verify_status"] if row else None,
+    )
+
+    if run_verify:
+        try:
+            from cite_hustle.verifier import PDFVerifier
+
+            pending = repo.get_pdfs_pending_verification()
+            pending = pending[pending["doi"] == doi]
+            if not pending.empty:
+                verifier = PDFVerifier(
+                    repo=repo,
+                    quarantine_dir=settings.quarantine_dir,
+                    model=settings.pdf_verifier_model,
+                    gray_low=settings.verify_gray_zone_low,
+                    gray_high=settings.verify_gray_zone_high,
+                    use_llm=bool(os.environ.get("OLLAMA_API_KEY")),
+                )
+                verifier.verify_batch(pending)
+                row = repo.get_pdf_file_by_doi(doi)
+                if row:
+                    out["path"] = row["pdf_file_path"]
+                    out["verify_status"] = row["verify_status"]
+                else:
+                    # The verifier deletes the pdf_files row only when it
+                    # quarantines a mismatched PDF.
+                    out["path"] = None
+                    out["verify_status"] = "mismatch"
+        except Exception as exc:
+            out["detail"] = f"verification failed: {exc}"[:200]
+
+    return out

@@ -1120,5 +1120,31 @@ def institutional(ctx, limit, delay, recheck_days, headless):
             )
 
 
+@main.command("get")
+@click.argument("doi")
+@click.option("--no-institutional", is_flag=True, help="Skip the EZproxy browser stage")
+@click.option("--no-verify", is_flag=True, help="Skip immediate PDF verification")
+@click.pass_context
+def get_paper(ctx, doi, no_institutional, no_verify):
+    """Get one paper end-to-end: metadata -> OA fallbacks -> EZproxy -> verify.
+
+    Runner-only (takes the DB write lock). From other machines use
+    'cite-hustle request DOI' instead.
+    """
+    from cite_hustle import acquire
+
+    repo = ctx.obj["repo"]
+    out = acquire.acquire_one(
+        repo, doi, use_institutional=not no_institutional, run_verify=not no_verify
+    )
+    icon = {"already_have": "✓", "downloaded": "✓"}.get(out["status"], "✗")
+    click.echo(f"{icon} {doi}: {out['status']}")
+    for key in ("source", "path", "verify_status", "detail"):
+        if out.get(key):
+            click.echo(f"   {key}: {out[key]}")
+    if out["status"] == "session_expired":
+        click.echo("   Run 'poetry run cite-hustle login' and retry.")
+
+
 if __name__ == "__main__":
     main(obj={})

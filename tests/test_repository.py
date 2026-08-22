@@ -45,3 +45,9 @@ def test_institutional_feeder_requires_fallbacks_tried(repo):
 
     dois = set(repo.get_articles_for_institutional()["doi"])
     assert dois == {"10.1/tried"}
+
+
+def test_get_pdf_file_by_doi(repo):
+    add_article(repo, "10.1/pdf")
+    repo.upsert_pdf_file("10.1/pdf", "oa", None, "http://x/y.pdf", "/tmp/y.pdf")
+    assert repo.get_pdf_file_by_doi("10.1/pdf")["source"] == "oa"

@@ -184,3 +184,34 @@ def test_institutional_batch_aborts_on_webdriver_rebuild_failure(repo, tmp_path)
     assert counts["aborted"] is True
     assert counts["abort_reason"] == "webdriver"
     assert counts["error"] == 1  # only the first article's failed acquire() counted
+
+
+def test_acquire_one_already_have(repo, tmp_path):
+    add_article(repo, "10.1/have")
+    repo.upsert_pdf_file("10.1/have", "oa", None, "http://x.pdf", str(tmp_path / "h.pdf"))
+    out = acquire.acquire_one(repo, "10.1/have", use_institutional=False, run_verify=False)
+    assert out["status"] == "already_have"
+    assert out["source"] == "oa"
+
+
+def test_acquire_one_unknown_doi_fetches_metadata(repo, monkeypatch):
+    fetched = {
+        "doi": "10.1/new",
+        "title": "T",
+        "authors": "A B",
+        "year": 2024,
+        "journal_issn": "1234-5678",
+        "journal_name": "J",
+        "publisher": "P",
+    }
+    monkeypatch.setattr(acquire, "fetch_crossref_article", lambda doi: fetched)
+    monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
+    out = acquire.acquire_one(repo, "10.1/new", use_institutional=False, run_verify=False)
+    assert out["status"] == "no_source"
+    assert repo.get_article_by_doi("10.1/new")["title"] == "T"
+
+
+def test_acquire_one_metadata_not_found(repo, monkeypatch):
+    monkeypatch.setattr(acquire, "fetch_crossref_article", lambda doi: None)
+    out = acquire.acquire_one(repo, "10.1/ghost", use_institutional=False, run_verify=False)
+    assert out["status"] == "metadata_not_found"

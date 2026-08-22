@@ -346,6 +346,19 @@ class ArticleRepository:
         """Remove the pdf_files row (e.g. after quarantining a mismatched PDF)."""
         self.conn.execute("DELETE FROM pdf_files WHERE doi = ?", [doi])
 
+    def get_pdf_file_by_doi(self, doi: str) -> Optional[Dict]:
+        """Get the current PDF row for one article, or None if there is none."""
+        result = self.conn.execute(
+            """
+            SELECT doi, source, pdf_file_path, verify_status
+            FROM pdf_files WHERE doi = ?
+        """,
+            [doi],
+        ).fetchone()
+        if result:
+            return dict(zip(["doi", "source", "pdf_file_path", "verify_status"], result))
+        return None
+
     def get_pdfs_pending_verification(
         self, limit: Optional[int] = None, statuses: tuple = ("pending",)
     ) -> pd.DataFrame:
