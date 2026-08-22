@@ -1058,7 +1058,12 @@ def login():
 
 
 @main.command("institutional")
-@click.option("--limit", default=None, type=int, help="Limit number of articles")
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Limit number of articles (default: institutional_batch setting (50))",
+)
 @click.option("--delay", default=None, type=int, help="Seconds between articles")
 @click.option("--recheck-days", default=90, type=int, help="Re-try no_match pairs after N days")
 @click.option(
@@ -1080,6 +1085,7 @@ def institutional(ctx, limit, delay, recheck_days, headless):
     from cite_hustle.collectors.institutional import InstitutionalDownloader
 
     repo = ctx.obj["repo"]
+    limit = limit if limit is not None else settings.institutional_batch
     articles = repo.get_articles_for_institutional(limit=limit)
     if articles.empty:
         click.echo("✓ No articles pending institutional resolution")
@@ -1146,6 +1152,11 @@ def get_paper(ctx, doi, no_institutional, no_verify):
             click.echo(f"   {key}: {out[key]}")
     if out["status"] == "session_expired":
         click.echo("   Run 'poetry run cite-hustle login' and retry.")
+    elif out["status"] == "browser_error":
+        click.echo(
+            "   Browser failed to start or died; check Chrome/chromedriver on this "
+            "machine and re-run"
+        )
 
 
 @main.command("process-requests")
@@ -1171,8 +1182,13 @@ def process_requests(ctx):
         f"\n✓ Processed requests: {counts['resolved']} resolved, "
         f"{counts['kept']} kept, {counts['dropped']} dropped"
     )
-    if counts["session_expired"]:
+    if counts["halted_reason"] == "session_expired":
         click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
+    elif counts["halted_reason"] == "browser_error":
+        click.echo(
+            "✗ Browser failed to start or died; check Chrome/chromedriver on this "
+            "machine and re-run"
+        )
 
 
 if __name__ == "__main__":

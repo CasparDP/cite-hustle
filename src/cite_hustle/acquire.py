@@ -266,8 +266,10 @@ def acquire_one(
     Unlike the batch commands this ignores the pdf_candidates memo: a human
     asked for this specific paper, so every source is tried fresh. Returns
     {doi, status, source, path, verify_status, detail} with status one of
-    already_have / downloaded / metadata_not_found / no_source / session_expired.
+    already_have / downloaded / metadata_not_found / no_source / session_expired
+    / browser_error.
     """
+    doi = doi.strip().lower()
     out = {
         "doi": doi,
         "status": None,
@@ -309,8 +311,8 @@ def acquire_one(
         factory = downloader_factory or _default_downloader_factory
         try:
             downloader = factory()
-        except Exception as exc:
-            out["status"] = "no_source"
+        except WebDriverException as exc:
+            out["status"] = "browser_error"
             out["detail"] = f"institutional browser setup failed: {exc}"[:200]
             return out
         try:
@@ -322,10 +324,12 @@ def acquire_one(
             out["status"] = "session_expired"
             out["detail"] = "EZproxy session expired"
             return out
+        if counts["abort_reason"] == "webdriver":
+            out["status"] = "browser_error"
+            out["detail"] = f"institutional aborted: {counts['abort_reason']}"
+            return out
         if counts["downloaded"]:
             won = "ezproxy"
-        elif counts["abort_reason"]:
-            out["detail"] = f"institutional aborted: {counts['abort_reason']}"
         elif counts["error"]:
             out["detail"] = "institutional attempt failed"
 
@@ -378,16 +382,25 @@ def drain_requests(repo, acquire_fn=None) -> dict:
     Resolved entries (already_have/downloaded) are dropped. metadata_not_found
     entries are dropped and logged as a failed "request" stage. Other failures
     get attempts += 1 and are kept, unless attempts reaches 3, in which case
-    they are dropped and logged as gave_up_after_3. A session_expired result
-    stops draining immediately, leaving the current entry and all remaining
-    entries in the queue unchanged. The queue is always rewritten atomically
-    via write_requests. Returns {"resolved", "kept", "dropped", "session_expired"}.
+    they are dropped and logged as gave_up_after_3. A session_expired or
+    browser_error result stops draining immediately, leaving the current entry
+    and all remaining entries in the queue unchanged (no attempts bump for the
+    halting entry). The queue is always rewritten atomically via
+    write_requests. Returns
+    {"resolved", "kept", "dropped", "session_expired", "halted_reason"}, where
+    halted_reason is None, "session_expired", or "browser_error".
     """
     if acquire_fn is None:
         acquire_fn = acquire_one
 
     entries = requests_queue.read_requests()
-    counts = {"resolved": 0, "kept": 0, "dropped": 0, "session_expired": False}
+    counts = {
+        "resolved": 0,
+        "kept": 0,
+        "dropped": 0,
+        "session_expired": False,
+        "halted_reason": None,
+    }
 
     remaining = []
     for i, entry in enumerate(entries):
@@ -395,8 +408,9 @@ def drain_requests(repo, acquire_fn=None) -> dict:
         result = acquire_fn(repo, doi)
         status = result["status"]
 
-        if status == "session_expired":
-            counts["session_expired"] = True
+        if status in ("session_expired", "browser_error"):
+            counts["halted_reason"] = status
+            counts["session_expired"] = status == "session_expired"
             remaining.extend(entries[i:])
             break
         elif status in ("already_have", "downloaded"):

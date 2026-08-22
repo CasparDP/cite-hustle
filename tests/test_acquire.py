@@ -199,6 +199,19 @@ def test_acquire_one_already_have(repo, tmp_path):
     assert out["source"] == "oa"
 
 
+def test_acquire_one_normalizes_doi_case_and_whitespace(repo, tmp_path, monkeypatch):
+    add_article(repo, "10.1/case")
+    repo.upsert_pdf_file("10.1/case", "oa", None, "http://x.pdf", str(tmp_path / "h.pdf"))
+
+    def fail_if_called(doi):
+        raise AssertionError("fetch_crossref_article should not be called")
+
+    monkeypatch.setattr(acquire, "fetch_crossref_article", fail_if_called)
+    out = acquire.acquire_one(repo, " 10.1/CASE ", use_institutional=False, run_verify=False)
+    assert out["status"] == "already_have"
+    assert out["doi"] == "10.1/case"
+
+
 def test_acquire_one_unknown_doi_fetches_metadata(repo, monkeypatch):
     fetched = {
         "doi": "10.1/new",
@@ -264,15 +277,29 @@ def test_acquire_one_reports_mismatch_when_verifier_quarantines(repo, tmp_path, 
     assert out["detail"] is None  # the verification step did not error out
 
 
-def test_acquire_one_webdriver_abort_is_no_source(repo, monkeypatch):
+def test_acquire_one_webdriver_abort_is_browser_error(repo, monkeypatch):
     add_article(repo, "10.1/browserdead")
     monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
     fake = FakeWebDriverRebuildFailsDownloader({"10.1/browserdead": "raise"})
     out = acquire.acquire_one(
         repo, "10.1/browserdead", downloader_factory=lambda: fake, run_verify=False
     )
-    assert out["status"] == "no_source"
+    assert out["status"] == "browser_error"
     assert "webdriver" in out["detail"]
+
+
+def test_acquire_one_factory_raises_webdriver_exception_is_browser_error(repo, monkeypatch):
+    add_article(repo, "10.1/nofactory")
+    monkeypatch.setattr(acquire, "try_sources_for_article", lambda *a, **k: None)
+
+    def bad_factory():
+        raise WebDriverException("chromedriver mismatch")
+
+    out = acquire.acquire_one(
+        repo, "10.1/nofactory", downloader_factory=bad_factory, run_verify=False
+    )
+    assert out["status"] == "browser_error"
+    assert "chromedriver mismatch" in out["detail"]
 
 
 def _crossref_response(status, payload):
@@ -371,7 +398,13 @@ def test_drain_requests_session_expired_leaves_queue_untouched(repo, tmp_path, m
         return _drain_result(doi, status)
 
     counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
-    assert counts == {"resolved": 0, "kept": 1, "dropped": 0, "session_expired": True}
+    assert counts == {
+        "resolved": 0,
+        "kept": 1,
+        "dropped": 0,
+        "session_expired": True,
+        "halted_reason": "session_expired",
+    }
 
     remaining = rq.read_requests()
     assert [e["doi"] for e in remaining] == ["10.1/a", "10.1/b", "10.1/c"]
@@ -385,6 +418,32 @@ def test_drain_requests_session_expired_leaves_queue_untouched(repo, tmp_path, m
     assert after_from_b == before_from_b  # b and c rewritten byte-identical to the original
 
 
+def test_drain_requests_browser_error_leaves_queue_untouched(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/a")
+    rq.append_request("10.1/b")
+    before = (tmp_path / "requests.jsonl").read_bytes()
+
+    def fake_acquire(repo_, doi):
+        return _drain_result(doi, "browser_error")
+
+    counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
+    assert counts == {
+        "resolved": 0,
+        "kept": 0,
+        "dropped": 0,
+        "session_expired": False,
+        "halted_reason": "browser_error",
+    }
+
+    after = (tmp_path / "requests.jsonl").read_bytes()
+    assert after == before  # queue untouched, no attempts bumped
+
+    remaining = rq.read_requests()
+    assert [e["doi"] for e in remaining] == ["10.1/a", "10.1/b"]
+    assert all(e["attempts"] == 0 for e in remaining)
+
+
 def test_drain_requests_gives_up_after_3_attempts(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
     rq.append_request("10.1/stuck")
@@ -395,7 +454,13 @@ def test_drain_requests_gives_up_after_3_attempts(repo, tmp_path, monkeypatch):
     counts = acquire.drain_requests(
         repo, acquire_fn=lambda repo_, doi: _drain_result(doi, "no_source")
     )
-    assert counts == {"resolved": 0, "kept": 0, "dropped": 1, "session_expired": False}
+    assert counts == {
+        "resolved": 0,
+        "kept": 0,
+        "dropped": 1,
+        "session_expired": False,
+        "halted_reason": None,
+    }
     assert rq.read_requests() == []
     logged = repo.conn.execute(
         "SELECT stage, status, error_message FROM processing_log WHERE doi = '10.1/stuck'"
