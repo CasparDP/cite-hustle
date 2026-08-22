@@ -16,6 +16,7 @@ import httpx
 import pandas as pd
 from selenium.common.exceptions import WebDriverException
 
+from cite_hustle import requests_queue
 from cite_hustle.collectors.fallback_resolvers import RESOLVERS, ResolverError
 from cite_hustle.collectors.http_pdf_downloader import doi_slug_filename, download_pdf
 from cite_hustle.collectors.institutional import InstitutionalDownloader, SessionExpired
@@ -369,3 +370,48 @@ def acquire_one(
             out["detail"] = f"verification failed: {exc}"[:200]
 
     return out
+
+
+def drain_requests(repo, acquire_fn=None) -> dict:
+    """Drain the requests queue, acquiring each queued DOI.
+
+    Resolved entries (already_have/downloaded) are dropped. metadata_not_found
+    entries are dropped and logged as a failed "request" stage. Other failures
+    get attempts += 1 and are kept, unless attempts reaches 3, in which case
+    they are dropped and logged as gave_up_after_3. A session_expired result
+    stops draining immediately, leaving the current entry and all remaining
+    entries in the queue unchanged. The queue is always rewritten atomically
+    via write_requests. Returns {"resolved", "kept", "dropped", "session_expired"}.
+    """
+    if acquire_fn is None:
+        acquire_fn = acquire_one
+
+    entries = requests_queue.read_requests()
+    counts = {"resolved": 0, "kept": 0, "dropped": 0, "session_expired": False}
+
+    remaining = []
+    for i, entry in enumerate(entries):
+        doi = entry["doi"]
+        result = acquire_fn(repo, doi)
+        status = result["status"]
+
+        if status == "session_expired":
+            counts["session_expired"] = True
+            remaining.extend(entries[i:])
+            break
+        elif status in ("already_have", "downloaded"):
+            counts["resolved"] += 1
+        elif status == "metadata_not_found":
+            repo.log_processing(doi, "request", "failed", "metadata_not_found")
+            counts["dropped"] += 1
+        else:
+            entry["attempts"] += 1
+            if entry["attempts"] >= 3:
+                repo.log_processing(doi, "request", "failed", "gave_up_after_3")
+                counts["dropped"] += 1
+            else:
+                remaining.append(entry)
+                counts["kept"] += 1
+
+    requests_queue.write_requests(remaining)
+    return counts

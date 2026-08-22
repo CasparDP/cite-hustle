@@ -1146,5 +1146,32 @@ def get_paper(ctx, doi, no_institutional, no_verify):
         click.echo("   Run 'poetry run cite-hustle login' and retry.")
 
 
+@main.command("process-requests")
+@click.pass_context
+def process_requests(ctx):
+    """Drain the requests queue, acquiring each queued DOI end-to-end.
+
+    Runner-only (takes the DB write lock). Resolved and metadata_not_found
+    DOIs are dropped from the queue; other failures stay queued with an
+    incremented attempt count and are dropped after 3 failed attempts.
+    """
+    from cite_hustle import acquire
+
+    def acquire_and_echo(repo_, doi):
+        out = acquire.acquire_one(repo_, doi)
+        icon = {"already_have": "✓", "downloaded": "✓"}.get(out["status"], "✗")
+        click.echo(f"{icon} {doi}: {out['status']}")
+        return out
+
+    repo = ctx.obj["repo"]
+    counts = acquire.drain_requests(repo, acquire_fn=acquire_and_echo)
+    click.echo(
+        f"\n✓ Processed requests: {counts['resolved']} resolved, "
+        f"{counts['kept']} kept, {counts['dropped']} dropped"
+    )
+    if counts["session_expired"]:
+        click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
+
+
 if __name__ == "__main__":
     main(obj={})

@@ -7,6 +7,7 @@ from conftest import add_article
 from selenium.common.exceptions import WebDriverException
 
 from cite_hustle import acquire
+from cite_hustle import requests_queue as rq
 from cite_hustle.collectors.fallback_resolvers import Candidate, ResolverError
 from cite_hustle.collectors.institutional import SessionExpired
 
@@ -322,3 +323,26 @@ def test_fetch_crossref_article_missing_title_returns_none(monkeypatch):
     payload = {"message": {"issued": {"date-parts": [[2024]]}}, "publisher": "P"}
     monkeypatch.setattr(acquire.httpx, "get", lambda *a, **k: _crossref_response(200, payload))
     assert acquire.fetch_crossref_article("10.1/x") is None
+
+
+def test_drain_requests_drops_resolved_keeps_failed(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/ok")
+    rq.append_request("10.1/miss")
+
+    def fake_acquire(repo_, doi):
+        status = "downloaded" if doi == "10.1/ok" else "no_source"
+        return {
+            "doi": doi,
+            "status": status,
+            "source": None,
+            "path": None,
+            "verify_status": None,
+            "detail": None,
+        }
+
+    counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
+    assert counts["resolved"] == 1 and counts["kept"] == 1
+    remaining = rq.read_requests()
+    assert [e["doi"] for e in remaining] == ["10.1/miss"]
+    assert remaining[0]["attempts"] == 1
