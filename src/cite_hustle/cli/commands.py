@@ -1111,7 +1111,13 @@ def institutional(ctx, limit, delay, recheck_days, headless):
         f"{counts['no_match']} without a PDF link, {counts['error']} errors"
     )
     if counts["aborted"]:
-        click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
+        if counts["abort_reason"] == "session_expired":
+            click.echo("✗ Session expired: run 'poetry run cite-hustle login' and re-run")
+        else:
+            click.echo(
+                "✗ Browser died and could not be rebuilt; check Chrome/chromedriver "
+                "on this machine and re-run"
+            )
 
 
 if __name__ == "__main__":

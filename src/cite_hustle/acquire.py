@@ -103,11 +103,18 @@ def run_institutional_batch(
     Records a pdf_candidates row (source "ezproxy") for every article
     attempted, and on success upserts pdf_files + logs processing. A
     SessionExpired abort stops the loop immediately without touching the
-    remaining articles. A WebDriverException counts as an error for the
-    current article and triggers one driver rebuild attempt before the loop
-    continues; if the rebuild itself fails, the batch aborts.
+    remaining articles (abort_reason="session_expired"). A WebDriverException
+    counts as an error for the current article and triggers one driver
+    rebuild attempt before the loop continues; if the rebuild itself fails,
+    the batch aborts (abort_reason="webdriver").
     """
-    counts = {"downloaded": 0, "no_match": 0, "error": 0, "aborted": False}
+    counts = {
+        "downloaded": 0,
+        "no_match": 0,
+        "error": 0,
+        "aborted": False,
+        "abort_reason": None,
+    }
 
     for _, row in articles.iterrows():
         article = row.to_dict()
@@ -122,7 +129,9 @@ def run_institutional_batch(
                 doi, "ezproxy", status="error", error_message="session_expired"
             )
             repo.log_processing(doi, "resolve_institutional", "failed")
+            counts["error"] += 1
             counts["aborted"] = True
+            counts["abort_reason"] = "session_expired"
             break
         except WebDriverException as exc:
             repo.record_pdf_candidate(
@@ -134,6 +143,7 @@ def run_institutional_batch(
                 downloader.setup_webdriver()
             except Exception:
                 counts["aborted"] = True
+                counts["abort_reason"] = "webdriver"
                 break
             time.sleep(delay)
             continue

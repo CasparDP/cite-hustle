@@ -107,6 +107,8 @@ def test_institutional_batch_aborts_on_session_expired(repo, tmp_path):
     fake = FakeInstDownloader({d: SessionExpired("login") for d in articles["doi"]})
     counts = acquire.run_institutional_batch(repo, fake, articles, delay=0)
     assert counts["aborted"] is True
+    assert counts["abort_reason"] == "session_expired"
+    assert counts["error"] == 1
     rows = repo.conn.execute(
         "SELECT doi, status, error_message FROM pdf_candidates WHERE source='ezproxy'"
     ).fetchall()
@@ -152,3 +154,33 @@ def test_institutional_batch_rebuilds_driver_on_webdriver_exception(repo, tmp_pa
     assert not counts["aborted"]
     assert counts["error"] == 1 and counts["no_match"] == 1
     assert fake.quit_calls == 1 and fake.setup_calls == 1
+
+
+class FakeWebDriverRebuildFailsDownloader:
+    """Fake whose acquire() always raises WebDriverException and whose
+    setup_webdriver() (the rebuild attempt) also fails."""
+
+    def __init__(self, results):
+        self.results = results  # doi -> "raise" sentinel
+
+    def acquire(self, article):
+        assert self.results[article["doi"]] == "raise"
+        raise WebDriverException("boom")
+
+    def quit(self):
+        pass
+
+    def setup_webdriver(self):
+        raise RuntimeError("chromedriver missing")
+
+
+def test_institutional_batch_aborts_on_webdriver_rebuild_failure(repo, tmp_path):
+    for doi in ("10.1/g", "10.1/h"):
+        add_article(repo, doi)
+        repo.record_pdf_candidate(doi, "oa", status="no_match")
+    articles = repo.get_articles_for_institutional()
+    fake = FakeWebDriverRebuildFailsDownloader({d: "raise" for d in articles["doi"]})
+    counts = acquire.run_institutional_batch(repo, fake, articles, delay=0)
+    assert counts["aborted"] is True
+    assert counts["abort_reason"] == "webdriver"
+    assert counts["error"] == 1  # only the first article's failed acquire() counted
