@@ -346,3 +346,58 @@ def test_drain_requests_drops_resolved_keeps_failed(repo, tmp_path, monkeypatch)
     remaining = rq.read_requests()
     assert [e["doi"] for e in remaining] == ["10.1/miss"]
     assert remaining[0]["attempts"] == 1
+
+
+def _drain_result(doi, status):
+    return {
+        "doi": doi,
+        "status": status,
+        "source": None,
+        "path": None,
+        "verify_status": None,
+        "detail": None,
+    }
+
+
+def test_drain_requests_session_expired_leaves_queue_untouched(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/a")
+    rq.append_request("10.1/b")
+    rq.append_request("10.1/c")
+    before = (tmp_path / "requests.jsonl").read_text()
+
+    def fake_acquire(repo_, doi):
+        status = "no_source" if doi == "10.1/a" else "session_expired"
+        return _drain_result(doi, status)
+
+    counts = acquire.drain_requests(repo, acquire_fn=fake_acquire)
+    assert counts == {"resolved": 0, "kept": 1, "dropped": 0, "session_expired": True}
+
+    remaining = rq.read_requests()
+    assert [e["doi"] for e in remaining] == ["10.1/a", "10.1/b", "10.1/c"]
+    assert remaining[0]["attempts"] == 1  # processed before the expiry, incremented
+    assert remaining[1]["attempts"] == 0  # the session_expired entry itself: untouched
+    assert remaining[2]["attempts"] == 0  # never reached: untouched
+
+    after = (tmp_path / "requests.jsonl").read_text()
+    after_from_b = "\n".join(after.splitlines()[1:])
+    before_from_b = "\n".join(before.splitlines()[1:])
+    assert after_from_b == before_from_b  # b and c rewritten byte-identical to the original
+
+
+def test_drain_requests_gives_up_after_3_attempts(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "queue_path", lambda: tmp_path / "requests.jsonl")
+    rq.append_request("10.1/stuck")
+    entries = rq.read_requests()
+    entries[0]["attempts"] = 2
+    rq.write_requests(entries)
+
+    counts = acquire.drain_requests(
+        repo, acquire_fn=lambda repo_, doi: _drain_result(doi, "no_source")
+    )
+    assert counts == {"resolved": 0, "kept": 0, "dropped": 1, "session_expired": False}
+    assert rq.read_requests() == []
+    logged = repo.conn.execute(
+        "SELECT stage, status, error_message FROM processing_log WHERE doi = '10.1/stuck'"
+    ).fetchall()
+    assert logged == [("request", "failed", "gave_up_after_3")]
