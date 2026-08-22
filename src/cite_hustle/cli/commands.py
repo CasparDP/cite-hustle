@@ -20,6 +20,9 @@ from cite_hustle.database.repository import ArticleRepository
 # alongside other readers (e.g. the rainer MCP server) without a lock conflict.
 READ_ONLY_COMMANDS = {"status", "dashboard", "journals", "search", "sample", "wiki-index"}
 
+# Commands that never touch the database (usable on any machine, any time).
+NO_DB_COMMANDS = {"request", "login"}
+
 # Seconds a write command waits for another process to release the DB file.
 WRITE_LOCK_WAIT_SECONDS = 120
 
@@ -36,6 +39,9 @@ def main(ctx):
 
     # Help text and bare invocation don't touch the database.
     if ctx.invoked_subcommand is None or "--help" in sys.argv or "-h" in sys.argv:
+        return
+
+    if ctx.invoked_subcommand in NO_DB_COMMANDS:
         return
 
     read_only = ctx.invoked_subcommand in READ_ONLY_COMMANDS
@@ -1043,6 +1049,23 @@ def rebuild_fts(ctx):
     click.echo("✓ REBUILD COMPLETE")
     click.echo("=" * 60)
     click.echo("\nYou can now search with: poetry run cite-hustle search 'your query'\n")
+
+
+@main.command("request")
+@click.argument("doi")
+@click.option("--note", default=None, help="Why you want this paper (lands in the queue entry)")
+def request_paper(doi, note):
+    """Queue a DOI for acquisition by the runner (works on any machine).
+
+    Appends to <dropbox_base>/requests.jsonl; the runner's pipeline drains the
+    queue as its first stage, or run 'cite-hustle process-requests' manually.
+    """
+    from cite_hustle.requests_queue import append_request, queue_path
+
+    if append_request(doi, note=note):
+        click.echo(f"✓ Queued {doi} in {queue_path()}")
+    else:
+        click.echo(f"ℹ️  {doi} is already queued")
 
 
 if __name__ == "__main__":
