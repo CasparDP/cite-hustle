@@ -1,6 +1,6 @@
 # CLAUDE.md - Project Instructions for Claude Code
 
-> **Purpose**: Make AI agents productive fast in this Python/Poetry project that collects CrossRef metadata, scrapes SSRN (abstracts), and downloads PDFs into DuckDB with FTS search.
+> **Purpose**: Make AI agents productive fast in this Python/Poetry project that collects metadata, acquires and verifies PDFs through ordered fallbacks, stores state in DuckDB, and builds a searchable research wiki.
 
 ## Quick Start Commands
 
@@ -36,6 +36,9 @@ cite-hustle/
 │   ├── config.py              # Settings (pydantic-settings), env vars CITE_HUSTLE_*
 │   ├── matching.py            # Shared fuzzy title/author matching helpers
 │   ├── paths.py               # Portable $HOME/... path conversion for DB-stored paths
+│   ├── acquire.py             # Ordered fallback/institutional acquisition orchestration
+│   ├── pdfgrabba_export.py    # One-way terminal Elsevier manifest bridge
+│   ├── pdfgrabba_import.py    # Completed pdfgrabba files -> pending pdf_files rows
 │   ├── verifier.py            # PDFVerifier: checks PDFs match article metadata
 │   ├── pipeline.py            # Pipeline profiles, preflight guards, run reports
 │   ├── database/
@@ -47,11 +50,13 @@ cite-hustle/
 │   └── collectors/
 │       ├── journals.py        # Journal registry (source of truth; run `cite-hustle journals`)
 │       ├── metadata.py        # CrossRef API collector
-│       ├── ssrn_scraper.py    # Selenium-based SSRN search + abstract extraction
-│       ├── selenium_pdf_downloader.py  # Selenium PDF downloader (recommended)
+│       ├── ssrn_scraper.py    # Visible SeleniumBase-UC SSRN search + abstracts
+│       ├── selenium_pdf_downloader.py  # Visible SeleniumBase-UC SSRN downloads
 │       ├── openalex_enricher.py        # OpenAlex API enricher (async, fetches missing abstracts)
 │       ├── fallback_resolvers.py       # OA/NBER/arXiv PDF resolvers (post-SSRN fallback)
 │       ├── http_pdf_downloader.py      # Plain HTTP PDF download for fallback sources
+│       ├── institutional.py            # Plain-Selenium authenticated EZproxy downloads
+│       ├── publisher_pdf.py            # Publisher URL/PDF-link extraction helpers
 │       └── pdf_downloader.py  # Legacy HTTP downloader (usually blocked by Cloudflare)
 ├── deploy/                    # Runner-laptop deployment (launchd plists, install.sh, README)
 ├── scripts/
@@ -70,11 +75,11 @@ cite-hustle/
 |-----------|----------|---------|
 | CLI | `cli/commands.py` | Click-based CLI; creates `DatabaseManager`, passes `ArticleRepository` to collectors |
 | Config | `config.py` | `Settings` class from pydantic-settings; storage at `$HOME/Dropbox/Github Data/cite-hustle/` |
-| Schema | `database/models.py` | DuckDB tables: `journals`, `articles`, `ssrn_pages`, `processing_log`; FTS indexes |
+| Schema | `database/models.py` | Core, PDF, wiki, pipeline-run, and FTS schema |
 | Repository | `database/repository.py` | All DB operations: `insert_article`, `insert_ssrn_page`, `update_pdf_info`, `log_processing` |
 | CrossRef | `collectors/metadata.py` | `MetadataCollector` fetches article metadata via `crossref_commons` |
-| SSRN Scraper | `collectors/ssrn_scraper.py` | `SSRNScraper` searches SSRN, extracts abstracts using Selenium |
-| PDF Download | `collectors/selenium_pdf_downloader.py` | `SeleniumPDFDownloader` downloads PDFs (Cloudflare-safe) |
+| SSRN Scraper | `collectors/ssrn_scraper.py` | `SSRNScraper` searches SSRN and extracts abstracts with visible SeleniumBase UC |
+| PDF Download | `collectors/selenium_pdf_downloader.py` | `SeleniumPDFDownloader` downloads SSRN PDFs with visible SeleniumBase UC |
 | OpenAlex | `collectors/openalex_enricher.py` | `OpenAlexEnricher` fetches missing abstracts via OpenAlex API (async) |
 | Fallback PDFs | `collectors/fallback_resolvers.py` | `OAResolver`/`NBERResolver`/`ArXivResolver` find PDFs when SSRN fails |
 | PDF Verifier | `verifier.py` | `PDFVerifier` checks PDF matches metadata; quarantines mismatches |
@@ -116,9 +121,9 @@ poetry run cite-hustle collect --field all --year-start 2024 --parallel
 poetry run cite-hustle scrape --limit 50 --threshold 85
 poetry run cite-hustle scrape --no-headless  # Show browser for debugging
 
-# Download PDFs (use Selenium - HTTP is blocked by Cloudflare)
-poetry run cite-hustle download --use-selenium --limit 20
-poetry run cite-hustle download --use-selenium --no-headless  # Debug mode
+# Download SSRN PDFs (visible SeleniumBase UC; HTTP is blocked by Cloudflare)
+poetry run cite-hustle download --limit 20
+poetry run cite-hustle download --no-headless --limit 5  # Watch a smoke batch
 
 # Search articles (uses BM25 full-text search)
 poetry run cite-hustle search "earnings management"
@@ -161,6 +166,14 @@ poetry run cite-hustle process-requests   # runner-only: drain requests.jsonl ma
 # EZproxy institutional PDF resolution (after SSRN + OA/NBER/arXiv fallbacks failed)
 poetry run cite-hustle institutional --limit 50 --delay 10
 poetry run cite-hustle login              # one-time headful ERNA/EZproxy login; rerun on session_expired
+
+# Read-only handoff of terminal Elsevier residuals to pdfgrabba
+poetry run cite-hustle export-pdfgrabba \
+  --manifest /absolute/path/to/download_manifest.json --dry-run
+
+# Runner-only return of completed pdfgrabba files into verification/wiki ingestion
+poetry run cite-hustle import-pdfgrabba \
+  --manifest "$HOME/Dropbox/Github Data/cite-hustle/pdfs/download_manifest.json" --dry-run
 
 # Utilities
 poetry run cite-hustle status          # Database statistics
@@ -207,16 +220,24 @@ Accept match if score ≥ threshold (default 85). See `SSRNScraper._calculate_co
 Note: two independent defaults exist; the `scrape` command's `--threshold` flag defaults to 85, while `Settings.similarity_threshold` (used by `resolve-fallbacks`, set via `CITE_HUSTLE_SIMILARITY_THRESHOLD`) defaults to 90.
 
 ### Anti-Detection (Selenium)
-The scraping/downloading stack currently uses a mixed Selenium approach:
-- Selenium browser automation as the base
-- `selenium-stealth` hardening where configured
-- `undetected-chromedriver` support in the dependency stack
-- Randomized browser behavior/fingerprints and automation-flag hardening where implemented
-- Automatic cookie acceptance and Cloudflare challenge handling
+The browser stack is intentionally split:
+
+- **SSRN scrape and download:** SeleniumBase `Driver(uc=True)`, always visible.
+  Navigate with `uc_open_with_reconnect(url)`, never `.get()`; `.get()` can leave UC
+  with `no such window` on Chrome 151. The scraper accepts the legacy headless CLI
+  flag but forces visible mode; the downloader rejects `headless=True` before launch.
+- **EZproxy/publishers:** plain Selenium with Selenium Manager and the persistent
+  profile at `~/.cache/cite-hustle/chrome-profile`. This route is live-verified for
+  Wiley and OUP. Never open another Chrome against that profile while it is in use.
+- `undetected-chromedriver` 3.5.5 remains in the dependency file for now but no
+  current cite-hustle collector imports it; it is incompatible with Chrome 151.
 
 Cloudflare handling in `ssrn_scraper.py` (since 2026-08): challenges are detected by content markers unique to challenge pages (never `data-cfasync`/`__cf_bm`, which appear on every Cloudflare-served page); "passed" means the challenge page actually went away, never cookie presence. Interactive Turnstile checkboxes prompt the operator in headful mode. Block-type failures skip per-article retries and trip a run-level circuit breaker (abort after 3 consecutive). A 45s page-load timeout replaces opaque 120s client hangs. See `tests/test_ssrn_blocking.py` for the pinned behavior.
 
-Implementation details may differ between `ssrn_scraper.py` and `selenium_pdf_downloader.py`, so prefer code-level verification when changing anti-detection behavior.
+Terminal browser errors (`no such window`, invalid session, renderer disconnects,
+and related failures) must stop before persisting the current scrape as an
+article-level miss. Implementation details differ between the scraper and downloader,
+so verify both when changing browser lifecycle behavior.
 
 ### OpenAlex Enrichment Pattern
 Use `enrich-openalex` to fill missing abstracts without browser automation:
@@ -236,7 +257,7 @@ repo.insert_ssrn_page(doi, ssrn_url, html_content=None, html_file_path=html_path
 ```
 
 ### PDF Download
-- **Recommended**: Use `SeleniumPDFDownloader` with `--use-selenium` flag
+- **SSRN**: `SeleniumPDFDownloader` is the only supported path; `--use-selenium` is a deprecated compatibility flag
 - **Legacy**: HTTP downloader in `pdf_downloader.py` is usually blocked by Cloudflare (kept for testing)
 
 ## Key Dependencies
@@ -246,7 +267,9 @@ repo.insert_ssrn_page(doi, ssrn_url, html_content=None, html_file_path=html_path
 | `click` | CLI framework |
 | `duckdb` | Database with FTS extension |
 | `pydantic-settings` | Configuration management |
-| `selenium` + `selenium-stealth` + `undetected-chromedriver` | Browser automation and anti-detection support for scraping/downloading |
+| `seleniumbase` | SeleniumBase UC mode for visible SSRN scrape/download on current Chrome |
+| `selenium` | Plain Selenium/Selenium Manager for authenticated EZproxy publisher access |
+| `undetected-chromedriver` + `selenium-stealth` | Legacy dependencies; current collectors do not import them |
 | `rapidfuzz` | Fuzzy string matching for SSRN results |
 | `crossref-commons` | CrossRef API client |
 | `beautifulsoup4` + `lxml` | HTML parsing |
@@ -286,7 +309,8 @@ ssrn_pages (doi PK/FK, ssrn_url, ssrn_id, html_content, html_file_path, abstract
 processing_log (id PK, doi, stage, status, error_message, processed_at)
 
 -- Any-source PDF pipeline (added 2026-07)
-pdf_files (doi PK/FK, source 'ssrn'|'nber'|'arxiv'|'oa'|'ezproxy', source_url, pdf_url, pdf_file_path,
+pdf_files (doi PK/FK, source VARCHAR -- observed: ssrn/nber/arxiv/oa/ezproxy/elsevier_manual/pdfgrabba,
+           source_url, pdf_url, pdf_file_path,
            match_score, downloaded_at, verify_status 'pending'|'match'|'mismatch'|'uncertain'|'unreadable',
            verify_method, verify_score, verify_model, verify_reason, verified_at)
 pdf_candidates (doi+source PK, candidate_url, pdf_url, match_score, status, error_message, checked_at)
@@ -304,16 +328,19 @@ fts_main_ssrn_pages (on abstract)
 | Problem | Solution |
 |---------|----------|
 | Search returns empty results | `poetry run cite-hustle rebuild-fts` |
-| Cloudflare blocks downloads | Use `--use-selenium` and `--no-headless` to debug |
-| Scrape aborts with "Cloudflare block suspected" | IP is challenge-flagged (verify: `curl` to papers.ssrn.com returns instant 403). Run on the runner laptop, raise `--delay`, or wait a few hours; in headful mode click the Turnstile checkbox when prompted |
+| Cloudflare blocks SSRN downloads | Confirm the current SeleniumBase UC code is installed and run visibly; headless is unsupported |
+| Scrape aborts with "Cloudflare block suspected" | The IP is challenge-flagged. Stop the run, keep a high `--delay`, and wait; if unrelated scrapers share the IP, do not hammer retries or change IP underneath them. In visible mode the operator may click Turnstile when prompted |
 | Paths wrong across machines | Check `$HOME/Dropbox/Github Data/cite-hustle` exists or set `CITE_HUSTLE_*` env vars |
-| ChromeDriver not found | `brew install --cask chromedriver` |
+| ChromeDriver not found | Install/update Chrome and run `poetry install`. SeleniumBase manages the SSRN UC driver; Selenium Manager resolves the plain institutional driver. Do not pin a driver unless diagnosing a specific failure |
 | DuckDB lock error | Close other DuckDB connections (CLI tools, notebooks) |
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
 | Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
 | `enrich-openalex` shows thousands of candidates unexpectedly | Candidates = ALL articles for that year missing abstracts, not just newly added ones -- use `make enrich-year` separately, not inline with collect |
-| Elsevier/ScienceDirect institutional downloads fail (`not_a_pdf: download_timeout` or `no_pdf_link`) | Known limitation (2026-08): SD's bot detection (`cra_js_challenge`) rejects the pdfft request from any driver tried (plain Selenium incl. stealth flags, SeleniumBase UC). Wiley and OUP work. Candidates re-enter after `error_recheck_days`; fix candidates: SeleniumBase UC with its own login round, or the Elsevier API + eduVPN |
-| SSRN scrape/download fails with `session not created: cannot connect to chrome` | undetected-chromedriver 3.5.5 (unmaintained) is broken against Chrome 136+; the institutional path was migrated to plain Selenium, the SSRN path still needs migrating (SeleniumBase UC mode is installed and probe-verified to launch) |
+| Elsevier/ScienceDirect institutional downloads fail (`cra_js_challenge`, `download_timeout`, or `no_pdf_link`) | Known limitation (2026-08): a human-assisted SB-UC run downloaded via `/pdfft`, but a fresh unattended run with the same profile was challenged again. The API also requires an Elsevier-issued key; eduVPN alone is insufficient. No autonomous Elsevier implementation is retained. Wiley/OUP remain working; use `export-pdfgrabba --dry-run` and pdfgrabba's semi-interactive workflow for terminal residuals |
+| `export-pdfgrabba` refuses a manifest | The exporter intentionally rejects invalid/non-list JSON, duplicate normalized DOIs, absent parent directories, and missing manifests without `--create`. It opens DuckDB read-only and must not run while pdfgrabba is rewriting the same manifest |
+| `import-pdfgrabba` imports nothing | Only `downloaded`/`skipped` entries with a uniquely known DOI, safe filename, and valid PDF beside the manifest are ready. Use `--dry-run` for exact counts; existing `pdf_files` rows are intentionally preserved |
+| A source=`pdfgrabba` PDF verifies as mismatch | Verification quarantines it but the importer intentionally leaves manifest state untouched. Inspect first, then manually reset the pdfgrabba entry to `failed` only when a retry is wanted |
+| SSRN scrape/download fails with `session not created: cannot connect to chrome` | A stale checkout/venv is probably still using raw `undetected-chromedriver`, which is broken on Chrome 151. The current two SSRN collectors use SeleniumBase `Driver(uc=True)` plus `uc_open_with_reconnect`; run `poetry install` and verify those imports before changing Chrome or the institutional path |
 
 ## Environment Variables
 
@@ -335,7 +362,7 @@ CITE_HUSTLE_ERROR_RECHECK_DAYS=2                   # Days before retrying an 'er
 
 - **Formatter**: Black (line-length 100)
 - **Linter**: Ruff (line-length 100)
-- **Python**: 3.12+
+- **Python**: 3.11+ (the Poetry constraint is `^3.11`)
 - **Type hints**: Use throughout, especially in public APIs
 
 ## Utility Scripts
@@ -396,9 +423,14 @@ poetry run python extract_abstracts_from_html.py
 - **Single writer** (2026-07): the dedicated runner laptop is the only machine that writes to the DB; other machines use read-only commands. See `deploy/README.md`.
 - **Verification precedes wiki ingestion**: only `pdf_files.verify_status = 'match'` PDFs are ingested; mismatches are quarantined to `pdfs/quarantine/` and the SSRN path marked unavailable so fallbacks take over.
 - **Wiki lives at** `$HOME/Dropbox/Github Data/cite-hustle/wiki/` in process-paper format (`sources/`, `concepts/`, auto-generated `indexes/`); summaries are produced by the external process-paper skill (deep depth), never by reimplementing it here.
-- **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact); open-access only, no paywalled publisher scraping.
+- **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact). The authenticated publisher stage runs last, only after the SSRN/free-source path; do not add unauthenticated paywall scraping.
 - **PDF downloads need a visible browser on an unlocked screen** (SSRN Cloudflare/Turnstile): headless is blocked; headful clears only on an active, unlocked display. Run ad-hoc downloads manually (`caffeinate -i ... download --limit N`, resumable). Fully unattended scheduling works only on the dedicated runner laptop, which stays awake, logged in, and never locks. An overnight scheduler on a locked screen was tried and removed (2026-06); the runner-laptop design (2026-07) re-enabled it under those conditions. See `deploy/README.md`.
 - **EZproxy-first institutional access** (2026-08): BrowZine/LibKey deferred from v1 -- the Third Iron API returns 401 without a library-issued key, and libkey.io is a JS-only SPA whose robots.txt disallows everything. EUR's LibKey/BrowZine library ID (2163) is recorded for later reference in case a key becomes available.
 - **Chrome profile for the EZproxy session** lives on local disk (`~/.cache/cite-hustle/chrome-profile` by default), never Dropbox -- authenticated cookies must not sync or be shared across machines.
 - **`requests.jsonl` queue is the only cross-machine write channel**: any machine can append a DOI request without opening the DB; only the runner (via `process-requests` or the pipeline's `requests` stage) reads and resolves it.
 - **Skill-only interface; MCP server deferred** (2026-08): the CLI is the service layer, documented by a `cite-hustle` skill in the dot-files repo. No long-running server or extra DuckDB connection.
+- **SSRN uses SeleniumBase UC** (2026-08): raw `undetected-chromedriver` died against Chrome 151. Both SSRN modules now use visible `Driver(uc=True)` and `uc_open_with_reconnect`; the live scrape/download smoke passed for `10.1016/j.jacceco.2026.101901`, and the current 106-test suite is green.
+- **Verifier backlog is drained** (2026-08): 1,050 pending rows became 996 matches, 48 quarantined mismatches, 3 uncertain, and 3 unreadable; exact pending is 0. `idx_pdf_files_verify` was rebuilt after an ART-index inconsistency (indexed 811 versus full-scan 1,050), with no row-data rewrite.
+- **Elsevier remains manual** (2026-08): VPN entitlement plus a human CAPTCHA click can yield the `/pdfft` PDF, but saved browser state did not make the next run unattended. The API is not usable without a key. No experimental route is retained.
+- **pdfgrabba export is implemented** (2026-08): `export-pdfgrabba` opens DuckDB read-only and appends only terminal Elsevier residuals (no PDF; SSRN exhausted; `oa`, `nber`, and `arxiv` all exact `no_match`) to an explicitly supplied manifest. Existing state wins, DOI deduplication is normalized, writes are atomic, missing manifests require `--create`, and the command is not scheduled. The live dry-run selected the 48-row baseline; the six retryable error rows stayed excluded. Never run it during an active pdfgrabba manifest rewrite.
+- **pdfgrabba return path is implemented** (2026-08): the paper-agnostic manifest is `$HOME/Dropbox/Github Data/cite-hustle/pdfs/download_manifest.json`. Runner-only `import-pdfgrabba` reads completed `downloaded`/`skipped` entries, validates known DOI + safe filename + PDF magic, preserves existing PDF state, and inserts source=`pdfgrabba` rows as verification `pending`. It never edits the manifest and is not scheduled; follow with `verify-pdfs` and `wiki-ingest`.

@@ -27,7 +27,9 @@ cite-hustle init
 **What it does:**
 
 - Creates DuckDB database at configured path
-- Initializes all tables (`journals`, `articles`, `ssrn_pages`, `processing_log`)
+- Initializes the core, PDF, wiki, and pipeline tables
+  (`journals`, `articles`, `ssrn_pages`, `processing_log`, `pdf_files`,
+  `pdf_candidates`, `wiki_pages`, and `pipeline_runs`)
 - Sets up full-text search indexes
 - Creates required data directories
 
@@ -151,7 +153,9 @@ cite-hustle scrape [OPTIONS]
 - `--limit <n>` - Limit number of articles to scrape (default: all pending)
 - `--delay <seconds>` - Delay between requests (default: `20`; raised from 5 to reduce Cloudflare challenges)
 - `--threshold <0-100>` - Minimum similarity threshold for matching (default: `85`)
-- `--headless` / `--no-headless` - Run browser in headless mode (default: headless)
+- `--headless` / `--no-headless` - Compatibility flag. The CLI default is still
+  `--headless`, but the SSRN scraper forces visible SeleniumBase UC mode because
+  headless Chrome is blocked
 
 **Examples:**
 
@@ -167,6 +171,7 @@ cite-hustle scrape
 **What it does:**
 
 - Searches SSRN for each pending article
+- Uses SeleniumBase `Driver(uc=True)` and `uc_open_with_reconnect()` in a visible browser
 - Uses similarity matching to identify best results
 - Extracts abstract and SSRN page metadata
 - Saves SSRN HTML to disk
@@ -228,10 +233,12 @@ caffeinate -i poetry run cite-hustle download   # macOS: run unattended without 
 
 **What it does:**
 
-- Opens a real (visible) Chrome window to pass SSRN's Cloudflare protection
+- Opens a real, visible SeleniumBase UC Chrome window and navigates with
+  `uc_open_with_reconnect()` to pass SSRN's Cloudflare protection
 - Downloads only author-posted, openly available PDFs (no login required)
 - Marks papers with no full text "not available" and skips them next time
-- Saves progress after every paper, so runs are resumable and unattended-safe
+- Saves progress after every paper, so runs are resumable. Unattended runs require
+  the dedicated runner to remain awake, logged in, and unlocked
 
 **When to use:** After `scrape`/`enrich-openalex`, when you want local PDFs
 
@@ -349,6 +356,13 @@ cite-hustle institutional --limit 20 --delay 15 --no-headless
 
 **When to use:** Runner-only, after `resolve-fallbacks`. Needs a live session from `login`.
 
+**Current publisher coverage:** Wiley and OUP are live-verified. The retained
+institutional command is not an autonomous ScienceDirect/Elsevier route. A separate
+visible SB-UC diagnostic succeeded only after a human cleared its recurring **I am
+not a robot** challenge, and the same profile was challenged again on the next fresh
+unattended run. The Elsevier API is also unavailable without an issued API key,
+which eduVPN does not replace.
+
 ---
 
 ### `login`
@@ -366,6 +380,71 @@ cite-hustle login
 - Confirms the session landed on a publisher page, not the login page
 
 **When to use:** Runner-only, once initially, and again whenever a run aborts with `session_expired`
+
+## Elsevier Residual Handoff
+
+### `export-pdfgrabba`
+
+Append terminal Elsevier residuals to pdfgrabba's existing
+`download_manifest.json` without launching pdfgrabba or mutating DuckDB.
+
+```bash
+cite-hustle export-pdfgrabba \
+  --manifest /absolute/path/to/download_manifest.json [OPTIONS]
+```
+
+**Options:**
+
+- `--manifest <path>` - Required manifest path; this is the only file the command may write
+- `--dry-run` - Report eligibility and merge counts without any filesystem writes
+- `--limit <n>` - Deterministic maximum number of eligible residuals
+- `--create` - Explicitly allow creation when the manifest is missing
+
+**Eligibility:** no `pdf_files` row; SSRN has no URL or an explicit
+`download_pdf/unavailable` log; each of OA, NBER, and arXiv has an exact
+`pdf_candidates.status = 'no_match'`; and publisher metadata contains Elsevier or
+the normalized DOI starts with `10.1016/`. Missing fallback rows and all `error`
+rows remain retryable and are excluded.
+
+**Safety:** existing manifest entries always win, including downloaded, skipped,
+no_doi, failed, and skipped_manual states. New DOIs are appended as `pending` with
+DOI-slug filenames; writes use atomic replacement. A second identical run adds
+zero. Invalid/non-list manifests, duplicate normalized DOIs, missing parents, and
+missing manifests without `--create` fail without alteration. Do not run this
+command while pdfgrabba is actively rewriting the same manifest.
+
+This command is not part of the scheduled pipeline. It does not invoke pdfgrabba,
+launch Chrome, download PDFs, or call an Elsevier API; ScienceDirect's recurring
+human challenge remains a semi-interactive pdfgrabba step.
+
+### `import-pdfgrabba`
+
+Register completed pdfgrabba files in cite-hustle so the existing verifier and wiki
+ingestion can process them.
+
+```bash
+cite-hustle import-pdfgrabba \
+  --manifest "$HOME/Dropbox/Github Data/cite-hustle/pdfs/download_manifest.json" \
+  --dry-run
+```
+
+**Options:**
+
+- `--manifest <path>` - Required pdfgrabba manifest; files are resolved beside it
+- `--dry-run` - Report all outcomes without writing DuckDB
+- `--limit <n>` - Deterministic maximum number of ready PDFs to import
+
+**Importable entries:** status is `downloaded` or `skipped`; DOI resolves uniquely to
+an existing article; `target_filename` is a safe basename; and the target exists with
+PDF magic bytes. Existing `pdf_files` rows always win. Missing DOIs, DOIs absent
+from DuckDB, missing files, invalid PDFs, and non-terminal statuses are reported
+separately without mutation.
+
+New rows use source `pdfgrabba` and verification status `pending`. The manifest is
+never edited. This is a runner-only DuckDB writer and is not scheduled. After a real
+import, run `verify-pdfs`, then `wiki-ingest`. If verification quarantines a
+mismatch, inspect it before manually resetting the preserved pdfgrabba entry to a
+retryable status such as `failed`.
 
 ---
 
@@ -464,14 +543,21 @@ cite-hustle status
 # 5) Scrape SSRN
 cite-hustle scrape --limit 100 --delay 70
 
-# 6) Download PDFs
+# 6) Download author-posted SSRN PDFs
 cite-hustle download --limit 50
 
-# 7) Search collection
+# 7) Try the remaining free PDF sources, then institutional access
+cite-hustle resolve-fallbacks --limit 200
+cite-hustle institutional --limit 50
+
+# 8) Verify downloaded files
+cite-hustle verify-pdfs
+
+# 9) Search collection
 cite-hustle search "earnings management"
 cite-hustle search "Smith" --author
 
-# 8) Final status
+# 10) Final status
 cite-hustle status
 ```
 
@@ -483,7 +569,7 @@ cite-hustle status
 
 - **CrossRef collection:** parallel mode is faster but may hit API limits
 - **SSRN scraping:** use higher delays for reliability (e.g., `70+`)
-- **PDF downloads:** with Selenium, small delays (e.g., `2-5`) are usually fine
+- **SSRN PDF downloads:** with visible SeleniumBase UC, small delays (e.g., `2-5`) are usually fine
 
 ### Resumable operations
 

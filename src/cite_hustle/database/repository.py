@@ -95,6 +95,30 @@ class ArticleRepository:
             return dict(zip(columns, result))
         return None
 
+    def resolve_article_doi(self, normalized_doi: str) -> Optional[str]:
+        """Resolve a canonical DOI to the exact primary-key value in articles.
+
+        Raises when legacy rows contain more than one spelling of the same
+        normalized DOI; importing into either row would then be ambiguous.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT doi
+            FROM articles
+            WHERE regexp_replace(
+                      lower(trim(doi)),
+                      '^(https?://(dx\\.)?doi\\.org/|doi:[[:space:]]*)+',
+                      ''
+                  ) = ?
+            ORDER BY doi
+            LIMIT 2
+            """,
+            [normalized_doi],
+        ).fetchall()
+        if len(rows) > 1:
+            raise ValueError(f"Ambiguous normalized DOI in articles: {normalized_doi}")
+        return rows[0][0] if rows else None
+
     # SSRN Pages
     def insert_ssrn_page(
         self,
@@ -342,6 +366,29 @@ class ArticleRepository:
             [doi, source, source_url, pdf_url, pdf_file_path, match_score],
         )
 
+    def insert_pdf_file_if_absent(
+        self,
+        doi: str,
+        source: str,
+        source_url: Optional[str],
+        pdf_url: Optional[str],
+        pdf_file_path: str,
+        match_score: Optional[float] = None,
+    ) -> bool:
+        """Record a pending PDF without replacing any existing PDF state."""
+        pdf_file_path = to_portable(pdf_file_path)
+        result = self.conn.execute(
+            """
+            INSERT INTO pdf_files
+                (doi, source, source_url, pdf_url, pdf_file_path, match_score)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (doi) DO NOTHING
+            RETURNING doi
+            """,
+            [doi, source, source_url, pdf_url, pdf_file_path, match_score],
+        ).fetchone()
+        return result is not None
+
     def delete_pdf_file(self, doi: str):
         """Remove the pdf_files row (e.g. after quarantining a mismatched PDF)."""
         self.conn.execute("DELETE FROM pdf_files WHERE doi = ?", [doi])
@@ -460,6 +507,64 @@ class ArticleRepository:
         if limit:
             query += f" LIMIT {int(limit)}"
         return self.conn.execute(query).fetchdf()
+
+    def get_terminal_elsevier_residuals(self, limit: Optional[int] = None) -> pd.DataFrame:
+        """Get Elsevier papers whose SSRN and free-PDF routes are terminal.
+
+        A paper is eligible only when it has no local PDF, SSRN has no URL or
+        was explicitly marked unavailable, and each free fallback has an exact
+        ``no_match`` row. In particular, missing and ``error`` candidate rows do
+        not satisfy the predicate and remain retryable.
+        """
+        normalized_doi = """
+            regexp_replace(
+                lower(trim(a.doi)),
+                '^(https?://(dx\\.)?doi\\.org/|doi:[[:space:]]*)+',
+                ''
+            )
+        """
+        query = f"""
+            SELECT a.doi, a.title, a.authors, a.year, a.journal_name
+            FROM articles a
+            WHERE NOT EXISTS (
+                      SELECT 1 FROM pdf_files p WHERE p.doi = a.doi
+                  )
+              AND (
+                  NOT EXISTS (
+                      SELECT 1 FROM ssrn_pages s
+                      WHERE s.doi = a.doi
+                        AND nullif(trim(s.ssrn_url), '') IS NOT NULL
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM processing_log pl
+                      WHERE pl.doi = a.doi
+                        AND pl.stage = 'download_pdf'
+                        AND pl.status = 'unavailable'
+                  )
+              )
+              AND EXISTS (
+                  SELECT 1 FROM pdf_candidates c
+                  WHERE c.doi = a.doi AND c.source = 'oa' AND c.status = 'no_match'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM pdf_candidates c
+                  WHERE c.doi = a.doi AND c.source = 'nber' AND c.status = 'no_match'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM pdf_candidates c
+                  WHERE c.doi = a.doi AND c.source = 'arxiv' AND c.status = 'no_match'
+              )
+              AND (
+                  lower(coalesce(a.publisher, '')) LIKE '%elsevier%'
+                  OR {normalized_doi} LIKE '10.1016/%'
+              )
+            ORDER BY {normalized_doi}, a.doi
+        """
+        params = []
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        return self.conn.execute(query, params).fetchdf()
 
     def get_recent_candidate_checks(self, no_match_cutoff, error_cutoff) -> set:
         """(doi, source) pairs to skip: recent no_match/downloaded, or recent errors.

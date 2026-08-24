@@ -2,9 +2,10 @@
 
 The pipeline runs unattended on the dedicated runner machine (currently the
 user's M2 Mac; always awake, user logged in). SSRN's Cloudflare protection
-requires a **visible** Chrome window, so everything runs as a LaunchAgent
-inside the GUI session, never as a LaunchDaemon, and the screen must stay
-unlocked.
+requires a **visible** SeleniumBase UC Chrome window, so browser stages run as a
+LaunchAgent inside the GUI session, never as a LaunchDaemon, and the screen must
+stay unlocked. The SSRN collectors use `uc_open_with_reconnect()` and are
+live-verified on Chrome 151.
 
 ## Provisioning checklist
 
@@ -59,6 +60,15 @@ Run reports (per-stage outcomes, quarantined PDFs, flagged wiki pages) are
 written to `~/Dropbox/Github Data/cite-hustle/reports/` and sync to every
 machine.
 
+The institutional stage is live-verified for Wiley and OUP. It is **not** an
+autonomous Elsevier/ScienceDirect route: a human-assisted UC diagnostic worked
+after the user cleared **I am not a robot**, but the same persistent profile was
+challenged again on the next fresh unattended run. The Elsevier API also needs
+an issued API key; VPN entitlement alone is insufficient. No experimental
+Elsevier route is retained. A focused cite-hustle-to-pdfgrabba export for
+terminal residuals is planned but not implemented, so current schedules may log
+retryable ScienceDirect institutional failures.
+
 ## Single-writer discipline (DuckDB on Dropbox)
 
 **This machine is the only one that writes to the database.** Other
@@ -91,6 +101,9 @@ poetry run cite-hustle login
 The session cookie lives in the local Chrome profile
 (`~/.cache/cite-hustle/chrome-profile` by default) and is not synced via
 Dropbox, so this must be run on the runner machine itself.
+
+Never start `login`, `institutional`, or another Chrome process against this
+profile while it is already open; Chrome profiles are single-process resources.
 
 ## What runs where
 

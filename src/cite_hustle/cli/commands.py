@@ -18,7 +18,15 @@ from cite_hustle.database.repository import ArticleRepository
 
 # Commands that only read the database. These open it read-only so they can run
 # alongside other readers (e.g. the rainer MCP server) without a lock conflict.
-READ_ONLY_COMMANDS = {"status", "dashboard", "journals", "search", "sample", "wiki-index"}
+READ_ONLY_COMMANDS = {
+    "status",
+    "dashboard",
+    "journals",
+    "search",
+    "sample",
+    "wiki-index",
+    "export-pdfgrabba",
+}
 
 # Commands that never touch the database (usable on any machine, any time).
 NO_DB_COMMANDS = {"request", "login"}
@@ -224,7 +232,11 @@ def collect(ctx, field, year_start, year_end, parallel, skip_fts_rebuild, force)
     help="Delay between requests (seconds); default raised from 5 to reduce Cloudflare challenges",
 )
 @click.option("--threshold", default=85, type=int, help="Minimum similarity threshold (0-100)")
-@click.option("--headless/--no-headless", default=True, help="Run browser in headless mode")
+@click.option(
+    "--headless/--no-headless",
+    default=True,
+    help="Compatibility flag; SSRN currently forces visible SeleniumBase UC mode.",
+)
 @click.pass_context
 def scrape(ctx, limit, delay, threshold, headless):
     """
@@ -407,12 +419,12 @@ def download(ctx, limit, delay, headless, use_selenium, retry_unavailable):
     """
     Download SSRN PDFs into the storage directory.
 
-    Uses a visible Chrome browser (undetected-chromedriver) to pass SSRN's
-    Cloudflare protection, then clicks the paper's download button. Papers with
-    no posted full text are marked unavailable and skipped on later runs.
+    Uses visible SeleniumBase UC Chrome to pass SSRN's Cloudflare protection,
+    then clicks the paper's download button. Papers with no posted full text are
+    marked unavailable and skipped on later runs.
 
     Progress is saved after every paper, so the run resumes where it left off
-    and is safe to leave running unattended (e.g. overnight):
+    and is safe to leave on the awake, logged-in, unlocked runner (e.g. overnight):
 
         caffeinate -i poetry run cite-hustle download   # macOS: prevent sleep
 
@@ -787,6 +799,108 @@ def wiki_index(ctx):
     pages = repo.get_ingested_wiki_pages()
     written = generate_indexes(pages, settings.wiki_dir)
     click.echo(f"✓ Regenerated: {', '.join(str(p) for p in written)}")
+
+
+@main.command("export-pdfgrabba")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Existing pdfgrabba download_manifest.json to merge into.",
+)
+@click.option("--dry-run", is_flag=True, help="Report the merge without writing the manifest.")
+@click.option(
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Deterministic maximum number of eligible residuals.",
+)
+@click.option(
+    "--create",
+    is_flag=True,
+    help="Allow creation when the supplied manifest does not exist.",
+)
+@click.pass_context
+def export_pdfgrabba(ctx, manifest_path, dry_run, limit, create):
+    """Append terminal Elsevier residuals to a pdfgrabba manifest.
+
+    This command reads DuckDB without mutation and never invokes pdfgrabba,
+    a browser, a downloader, or an API. Existing manifest entries always win.
+    Do not run it while pdfgrabba is actively rewriting the same manifest.
+    """
+    from cite_hustle.pdfgrabba_export import PdfgrabbaExportError, export_to_pdfgrabba
+
+    repo = ctx.obj["repo"]
+    residuals = repo.get_terminal_elsevier_residuals(limit=limit)
+
+    click.echo("⚠️  Do not run this exporter while pdfgrabba is rewriting the same manifest.")
+    try:
+        summary = export_to_pdfgrabba(
+            manifest_path,
+            residuals.to_dict("records"),
+            create=create,
+            dry_run=dry_run,
+        )
+    except PdfgrabbaExportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    action = "Would append" if dry_run else "Appended"
+    click.echo(f"Eligible terminal Elsevier residuals: {summary.eligible}")
+    click.echo(f"Existing manifest entries: {summary.existing}")
+    click.echo(f"Already present by normalized DOI: {summary.already_present}")
+    click.echo(f"{action}: {summary.added}")
+    click.echo(f"Final manifest entries: {summary.final}")
+    if dry_run:
+        click.echo("Dry run: manifest left unchanged.")
+
+
+@main.command("import-pdfgrabba")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="pdfgrabba download_manifest.json whose completed files should be imported.",
+)
+@click.option("--dry-run", is_flag=True, help="Report import outcomes without writing DuckDB.")
+@click.option(
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Deterministic maximum number of ready PDFs to import.",
+)
+@click.pass_context
+def import_pdfgrabba(ctx, manifest_path, dry_run, limit):
+    """Register completed pdfgrabba files for verification and wiki ingestion."""
+    from cite_hustle.pdfgrabba_import import PdfgrabbaImportError, import_from_pdfgrabba
+
+    repo = ctx.obj["repo"]
+    try:
+        summary = import_from_pdfgrabba(
+            repo,
+            manifest_path,
+            dry_run=dry_run,
+            limit=limit,
+        )
+    except PdfgrabbaImportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    action = "Would import" if dry_run else "Imported"
+    click.echo(f"Manifest entries: {summary.manifest_entries}")
+    click.echo(f"Completed pdfgrabba entries: {summary.terminal_entries}")
+    click.echo(f"Ignored non-terminal entries: {summary.ignored_status}")
+    click.echo(f"Already present in DuckDB: {summary.already_present}")
+    click.echo(f"Missing DOI: {summary.empty_doi}")
+    click.echo(f"DOI absent from DuckDB: {summary.unresolved_doi}")
+    click.echo(f"Missing file: {summary.missing_file}")
+    click.echo(f"Invalid PDF: {summary.invalid_pdf}")
+    click.echo(f"Ready files: {summary.ready}")
+    click.echo(f"{action}: {summary.selected if dry_run else summary.imported}")
+    if summary.ready > summary.selected:
+        click.echo(f"Deferred by --limit: {summary.ready - summary.selected}")
+    if not dry_run and summary.imported:
+        click.echo("Next: run 'poetry run cite-hustle verify-pdfs', then 'wiki-ingest'.")
 
 
 @main.command()

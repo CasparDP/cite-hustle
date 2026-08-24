@@ -2,7 +2,7 @@
 
 SSRN sits behind Cloudflare. The download flow that actually works is:
 
-1. Run a *visible* (non-headless) Chrome via undetected-chromedriver. Headless
+1. Run a *visible* (non-headless) Chrome via SeleniumBase UC mode. Headless
    Chrome is reliably flagged by Cloudflare's Turnstile and never gets past the
    "Just a moment..." interstitial, so the paper page never loads.
 2. Wait for the Turnstile interstitial to clear (a real browser passes it
@@ -23,11 +23,12 @@ import random
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, List, Callable
-import undetected_chromedriver as uc
+from seleniumbase import Driver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from urllib3.exceptions import MaxRetryError, ReadTimeoutError
 from tqdm import tqdm
 
 
@@ -47,8 +48,8 @@ class SeleniumPDFDownloader:
         Args:
             storage_dir: Directory to save PDFs
             delay: Base delay between downloads in seconds (jittered)
-            headless: Run browser headless. NOTE: headless is blocked by SSRN's
-                Cloudflare and is kept only for debugging; leave it False.
+            headless: Unsupported for SSRN downloads because Cloudflare blocks
+                it. Passing True raises before browser construction.
             download_timeout: Max seconds to wait for a PDF download to finish
             page_timeout: Max seconds to wait for page elements
             restart_every: Recreate the browser after this many papers to keep
@@ -72,37 +73,41 @@ class SeleniumPDFDownloader:
     # ── Browser lifecycle ──────────────────────────────────────────────────
 
     def setup_webdriver(self):
-        """Set up undetected-chromedriver with download preferences."""
-        chrome_options = uc.ChromeOptions()
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1400,1000")
+        """Set up SeleniumBase UC mode with download preferences."""
+        if self.headless:
+            raise RuntimeError(
+                "SSRN PDF downloads require visible SeleniumBase UC mode; "
+                "headless=True is unsupported."
+            )
 
-        chrome_options.add_experimental_option(
-            "prefs",
+        self.driver = Driver(
+            uc=True,
+            headless=False,
+            external_pdf=True,  # download PDFs instead of rendering them
+            window_size="1400,1000",
+            chromium_arg="disable-dev-shm-usage",
+        )
+        if not callable(getattr(self.driver, "uc_open_with_reconnect", None)):
+            self.quit()
+            raise RuntimeError(
+                "SeleniumBase UC mode is unavailable: driver lacks "
+                "uc_open_with_reconnect()."
+            )
+        self._configure_downloads()
+        self.cookies_accepted = False
+        print("  ✓ SeleniumBase UC started for PDF downloads")
+        return self.driver
+
+    def _configure_downloads(self):
+        """Keep browser downloads isolated in this downloader's temp directory."""
+        self.driver.execute_cdp_cmd(
+            "Browser.setDownloadBehavior",
             {
-                "download.default_directory": str(self.temp_download_dir),
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "plugins.always_open_pdf_externally": True,  # download, don't render
+                "behavior": "allow",
+                "downloadPath": str(self.temp_download_dir),
+                "eventsEnabled": True,
             },
         )
-
-        # Only pin version_main when we actually detected it. Passing None makes
-        # undetected-chromedriver grab "latest", which can mismatch the installed
-        # Chrome and fail to start.
-        kwargs = {"options": chrome_options, "headless": self.headless}
-        chrome_major = self._detect_chrome_major_version()
-        if chrome_major is not None:
-            kwargs["version_main"] = chrome_major
-
-        self.driver = uc.Chrome(**kwargs)
-        self.cookies_accepted = False
-        if self.headless:
-            print("  ⚠️  Headless mode is blocked by SSRN's Cloudflare; use visible mode.")
-        print("  ✓ undetected-chromedriver started for PDF downloads")
-        return self.driver
 
     def quit(self):
         """Close the browser if open."""
@@ -112,31 +117,6 @@ class SeleniumPDFDownloader:
             except Exception:
                 pass
             self.driver = None
-
-    @staticmethod
-    def _detect_chrome_major_version() -> Optional[int]:
-        """Return the major version of the locally installed Chrome/Chromium."""
-        import subprocess
-        import re
-
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium-browser",
-            "chromium",
-        ]
-        for path in candidates:
-            try:
-                out = subprocess.check_output(
-                    [path, "--version"], stderr=subprocess.DEVNULL, text=True
-                )
-                m = re.search(r"(\d+)\.", out)
-                if m:
-                    return int(m.group(1))
-            except Exception:
-                continue
-        return None
 
     # ── Page handling ──────────────────────────────────────────────────────
 
@@ -148,11 +128,8 @@ class SeleniumPDFDownloader:
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(2)
-            try:
-                if "just a moment" not in self.driver.page_source.lower():
-                    return True
-            except WebDriverException:
-                pass
+            if "just a moment" not in self.driver.page_source.lower():
+                return True
         return False
 
     def accept_cookies(self, timeout: int = 8):
@@ -194,6 +171,17 @@ class SeleniumPDFDownloader:
 
         return None, None
 
+    def _wait_for_download_control(self):
+        """Wait for an enabled download link or an explicit unavailable state."""
+
+        def control_ready(_driver):
+            button, available = self._find_download_button()
+            if available is None:
+                return False
+            return button, available
+
+        return WebDriverWait(self.driver, self.page_timeout).until(control_ready)
+
     # ── Single download ──────────────────────────────────────────────────────
 
     def download_pdf(self, ssrn_url: str, doi: str) -> Dict:
@@ -222,7 +210,10 @@ class SeleniumPDFDownloader:
 
         try:
             print(f"  → {ssrn_url}")
-            self.driver.get(ssrn_url)
+            self.driver.uc_open_with_reconnect(ssrn_url)
+            # UC reconnects the driver session during navigation; reassert the
+            # browser-level download directory before clicking the PDF control.
+            self._configure_downloads()
 
             if not self.wait_for_cloudflare():
                 result["error"] = "Cloudflare challenge did not clear"
@@ -231,7 +222,12 @@ class SeleniumPDFDownloader:
             self.accept_cookies()
             time.sleep(1)
 
-            button, available = self._find_download_button()
+            try:
+                button, available = self._wait_for_download_control()
+            except TimeoutException:
+                result["error"] = "No download button found"
+                return result
+
             if available is False:
                 print("  – Not available for download")
                 result["status"] = "unavailable"
@@ -266,7 +262,7 @@ class SeleniumPDFDownloader:
             result.update(success=True, status="downloaded", filepath=str(final_filepath))
             return result
 
-        except WebDriverException as e:
+        except (WebDriverException, MaxRetryError, ReadTimeoutError) as e:
             # Surface so the batch loop can restart the browser
             result["error"] = f"{type(e).__name__}: {e}"
             raise
@@ -328,7 +324,7 @@ class SeleniumPDFDownloader:
 
                 try:
                     result = self.download_pdf(ssrn_url, doi)
-                except WebDriverException as e:
+                except (WebDriverException, MaxRetryError, ReadTimeoutError) as e:
                     # Browser died; rebuild it and record this one as failed
                     print(f"  ⚠️  Browser error ({type(e).__name__}); restarting browser")
                     self.quit()

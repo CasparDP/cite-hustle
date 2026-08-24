@@ -4,12 +4,17 @@ import os
 import random
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
-import undetected_chromedriver as uc
+from seleniumbase import Driver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import (
+    InvalidSessionIdException,
+    NoSuchWindowException,
+    TimeoutException,
+    WebDriverException,
+)
 from urllib3.exceptions import MaxRetryError, ReadTimeoutError
 from rapidfuzz import fuzz
 from tqdm import tqdm
@@ -20,7 +25,7 @@ from cite_hustle.database.repository import ArticleRepository
 
 
 # Session-level randomization profiles for timezone, locale and window size.
-# User-agent is left to undetected-chromedriver so it always matches the real
+# User-agent is left to SeleniumBase UC so it always matches the real
 # Chrome version – overriding it is a detection signal.
 # Seconds before a navigation is abandoned. Cloudflare challenge loops can hold
 # the load event open indefinitely; without this, Selenium's HTTP client only
@@ -50,6 +55,27 @@ BLOCK_ERROR_MARKERS = (
 # Shared between the two layers that can see urllib3 client failures; the
 # "browser unresponsive" fragment is what _is_block_error keys on.
 BROWSER_UNRESPONSIVE_MSG = "Browser unresponsive: {} (suspected Cloudflare block)"
+
+# Selenium failures that mean the browser session cannot process another
+# article. These must abort before persistence so the current DOI stays pending.
+TERMINAL_BROWSER_ERROR_MARKERS = (
+    "browser died",
+    "invalid session id",
+    "no such window",
+    "target window already closed",
+    "web view not found",
+    "chrome not reachable",
+    "not connected to devtools",
+    "disconnected: unable to receive message from renderer",
+    "disconnected from renderer",
+    "unable to connect to renderer",
+    "unable to send message to renderer",
+    "session deleted because of page crash",
+    "tab crashed",
+    "browser has disconnected",
+    "unable to discover open pages",
+    "connection refused",
+)
 
 # Abort a run after this many consecutive block-type failures
 BLOCK_ABORT_THRESHOLD = 3
@@ -116,12 +142,12 @@ class SSRNScraper:
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
 
-        self.driver: Optional[uc.Chrome] = None
+        self.driver = None
         self.cookies_accepted = False
         self.profile = None
         self._last_navigation = 0.0
 
-    def _get_driver(self) -> uc.Chrome:
+    def _get_driver(self):
         """Return initialized WebDriver or raise if not set."""
         if self.driver is None:
             raise RuntimeError("WebDriver not initialized. Call setup_webdriver() first.")
@@ -151,14 +177,17 @@ class SSRNScraper:
         return absolute_path
 
     def setup_webdriver(self):
-        """Set up undetected-chromedriver with anti-detection options.
+        """Set up SeleniumBase UC mode with anti-detection options.
 
-        undetected-chromedriver patches the chromedriver binary to remove
-        the ``cdc_`` markers that Cloudflare scans for, and automatically
-        uses the real Chrome user-agent so there is never a version
-        mismatch between the browser capabilities and the UA string.
+        SeleniumBase UC mode manages the patched driver and uses the real
+        Chrome user-agent so there is never a version mismatch between the
+        browser capabilities and the UA string.
         """
-        chrome_options = uc.ChromeOptions()
+        if self.headless:
+            print(
+                "  ⚠️  SSRN blocks headless Chrome; forcing visible SeleniumBase UC mode."
+            )
+            self.headless = False
 
         # Select a session profile for timezone / locale / window size
         self.profile = random.choice(SESSION_PROFILES).copy()
@@ -166,69 +195,42 @@ class SSRNScraper:
         self.cookies_accepted = False
         self._last_navigation = 0.0
 
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"--lang={profile['languages'][0]}")
-
         # Randomize window size within the profile's envelope
         min_w, max_w, min_h, max_h = profile["window_bounds"]
         width = random.randint(min_w, max_w)
         height = random.randint(min_h, max_h)
-        chrome_options.add_argument(f"--window-size={width},{height}")
 
         # NOTE: Do NOT set --user-agent, excludeSwitches, useAutomationExtension,
-        # or --disable-blink-features here – undetected-chromedriver handles all
-        # of that automatically and adding them is itself a detection signal.
-
-        # Detect installed Chrome major version so the matching chromedriver is used.
-        # Only pin version_main when we actually detected it. Passing None makes
-        # undetected-chromedriver grab "latest" and can fail to start on a mismatch.
-        kwargs = {"options": chrome_options, "headless": self.headless}
-        chrome_major = self._detect_chrome_major_version()
-        if chrome_major is not None:
-            kwargs["version_main"] = chrome_major
-
-        # Initialize undetected-chromedriver
-        self.driver = uc.Chrome(**kwargs)
+        # or --disable-blink-features here – SeleniumBase UC handles that, and
+        # adding them is itself a detection signal.
+        self.driver = Driver(
+            uc=True,
+            headless=False,
+            locale_code=profile["languages"][0],
+            window_size=f"{width},{height}",
+            chromium_arg="disable-dev-shm-usage",
+        )
+        if not callable(getattr(self.driver, "uc_open_with_reconnect", None)):
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+            raise RuntimeError(
+                "SeleniumBase UC mode is unavailable: driver lacks "
+                "uc_open_with_reconnect()."
+            )
         self.driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-        version_label = f"chrome v{chrome_major}" if chrome_major is not None else "chrome version auto"
-        print(f"  ✓ undetected-chromedriver started (profile: {profile['name']}, {version_label})")
+        print(f"  ✓ SeleniumBase UC started (profile: {profile['name']})")
 
         self._apply_session_overrides()
         return self.driver
 
-    @staticmethod
-    def _detect_chrome_major_version() -> Optional[int]:
-        """Return the major version of the locally installed Chrome/Chromium."""
-        import subprocess, re
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium-browser",
-            "chromium",
-        ]
-        for path in candidates:
-            try:
-                out = subprocess.check_output(
-                    [path, "--version"], stderr=subprocess.DEVNULL, text=True
-                )
-                m = re.search(r"(\d+)\.", out)
-                if m:
-                    return int(m.group(1))
-            except Exception:
-                continue
-        # Fallback: let uc figure it out (may grab latest)
-        print("  ⚠️  Could not detect Chrome version; letting uc pick automatically")
-        return None
-
     def _apply_session_overrides(self):
         """Apply timezone and locale CDP overrides for the active session profile.
 
-        User-agent and navigator.webdriver are handled by
-        undetected-chromedriver – overriding them here would create
-        detectable inconsistencies.
+        User-agent and navigator.webdriver are handled by SeleniumBase UC;
+        overriding them here would create detectable inconsistencies.
         """
         if not self.driver or not self.profile:
             return
@@ -306,7 +308,12 @@ class SSRNScraper:
         drv = self._get_driver()
         self._respect_crawl_delay()
         try:
-            drv.get(url)
+            drv.uc_open_with_reconnect(url)
+            drv.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            WebDriverWait(drv, PAGE_LOAD_TIMEOUT).until(
+                lambda d: d.execute_script("return document.readyState")
+                in ("interactive", "complete")
+            )
             loaded = True
         except TimeoutException:
             print(f"  ⚠️  Page load timed out after {PAGE_LOAD_TIMEOUT}s; inspecting partial page...")
@@ -329,11 +336,21 @@ class SSRNScraper:
         msg = error_message.lower()
         return any(marker in msg for marker in BLOCK_ERROR_MARKERS)
 
+    @staticmethod
+    def _is_terminal_browser_error(error) -> bool:
+        """Return True when Selenium cannot reuse the current browser session."""
+        if isinstance(error, (InvalidSessionIdException, NoSuchWindowException)):
+            return True
+        msg = str(error or "").lower()
+        return any(marker in msg for marker in TERMINAL_BROWSER_ERROR_MARKERS)
+
     def _is_challenge_page(self) -> bool:
         """Check whether the currently loaded page is a Cloudflare challenge."""
         try:
             page_source = self.driver.page_source if self.driver else ""
         except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             print(f"  ℹ️  Could not read page source: {type(e).__name__}")
             return False
         return self._page_looks_like_challenge(page_source)
@@ -502,6 +519,8 @@ class SSRNScraper:
                 title_radio.click()
                 self._human_pause(0.3, 0.3)
             except Exception as e:
+                if self._is_terminal_browser_error(e):
+                    raise
                 print(f"  ⚠️  Could not select 'Title Only' radio button: {e}")
 
             # Click the main advanced-search "Search" button (not the header icon)
@@ -529,6 +548,8 @@ class SSRNScraper:
                     search_button = candidate
                     break
                 except Exception as e:
+                    if self._is_terminal_browser_error(e):
+                        raise
                     last_error = e
                     continue
 
@@ -537,7 +558,9 @@ class SSRNScraper:
                     btn_aria = search_button.get_attribute("aria-label")
                     btn_text = (search_button.text or "").strip()
                     print(f"    Using search button with aria-label='{btn_aria}', text='{btn_text}'")
-                except Exception:
+                except Exception as e:
+                    if self._is_terminal_browser_error(e):
+                        raise
                     pass
 
                 self._human_pause(0.5, 0.5)
@@ -550,6 +573,8 @@ class SSRNScraper:
                 try:
                     search_box.send_keys(Keys.RETURN)
                 except Exception as e:
+                    if self._is_terminal_browser_error(e):
+                        raise
                     raise TimeoutException(f"Could not trigger SSRN search via button or ENTER: {type(e).__name__}: {e}")
 
             self._human_pause(1.2, 0.6)
@@ -602,6 +627,8 @@ class SSRNScraper:
                     else:
                         print(f"  ⚠️  Result {idx}: Missing title or URL (title={bool(paper_title)}, url={bool(paper_url)})")
                 except Exception as e:
+                    if self._is_terminal_browser_error(e):
+                        raise
                     # Skip individual result if there's an error
                     print(f"  ⚠️  Error extracting result {idx}: {type(e).__name__}: {str(e)}")
                     continue
@@ -636,11 +663,17 @@ class SSRNScraper:
             print(f"✗ Error searching SSRN for '{title}': {error_msg}")
             return False, error_msg, []
         except WebDriverException as e:
-            error_msg = f"WebDriver error: {str(e)}"
+            if self._is_terminal_browser_error(e):
+                error_msg = f"Browser died: {type(e).__name__}: {str(e)}"
+            else:
+                error_msg = f"WebDriver error: {str(e)}"
             print(f"✗ Error searching SSRN for '{title}': {error_msg}")
             return False, error_msg, []
         except Exception as e:
-            error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
+            if self._is_terminal_browser_error(e):
+                error_msg = f"Browser died: {type(e).__name__}: {str(e)}"
+            else:
+                error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             print(f"✗ Error searching SSRN for '{title}': {error_msg}")
             return False, error_msg, []
 
@@ -718,6 +751,8 @@ class SSRNScraper:
             return best_url, abstract, int(best_similarity), html_content
 
         except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             error_msg = f"Error extracting abstract from paper page: {type(e).__name__}: {str(e)}"
             print(f"  ⚠️  {error_msg}")
             # Return URL anyway, even if abstract extraction failed, but no HTML
@@ -747,6 +782,8 @@ class SSRNScraper:
                 if abstract and len(abstract) > 50:  # Minimum reasonable abstract length
                     return abstract
             except Exception as e:
+                if self._is_terminal_browser_error(e):
+                    raise
                 # Strategy failed, try next one
                 continue
 
@@ -778,7 +815,9 @@ class SSRNScraper:
                     abstract = " ".join(p.text.strip() for p in paragraphs if p.text.strip())
                     return abstract if abstract else None
 
-        except:
+        except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             pass
 
         return None
@@ -807,7 +846,9 @@ class SSRNScraper:
                     if paragraphs:
                         abstract = " ".join(p.text.strip() for p in paragraphs if p.text.strip())
                         return abstract if abstract else None
-        except:
+        except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             pass
 
         return None
@@ -833,7 +874,9 @@ class SSRNScraper:
                     text = text.replace('Abstract\n', '').replace('Abstract', '').strip()
                     if len(text) > 50:
                         return text
-        except:
+        except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             pass
 
         return None
@@ -861,6 +904,8 @@ class SSRNScraper:
             drv.save_screenshot(str(filepath))
             return str(filepath)
         except Exception as e:
+            if self._is_terminal_browser_error(e):
+                raise
             print(f"  ⚠️  Failed to save screenshot: {e}")
             return None
 
@@ -910,7 +955,8 @@ class SSRNScraper:
             'match_score': None,
             'error_message': None,
             'success': False,
-            'block_suspected': False
+            'block_suspected': False,
+            'browser_died': False,
         }
 
         try:
@@ -918,6 +964,11 @@ class SSRNScraper:
             search_success, search_error, results = self.search_ssrn_and_extract_urls(title)
 
             if not search_success:
+                if self._is_terminal_browser_error(search_error):
+                    result['error_message'] = search_error
+                    result['browser_died'] = True
+                    return result
+
                 # A Cloudflare block will not clear by hammering the same URL;
                 # let the run-level circuit breaker decide instead of retrying
                 if self._is_block_error(search_error):
@@ -978,6 +1029,8 @@ class SSRNScraper:
         except Exception as e:
             error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             result['error_message'] = error_msg
+            if self._is_terminal_browser_error(e):
+                result['browser_died'] = True
             print(f"✗ {error_msg}")
             return result
 
@@ -1019,6 +1072,14 @@ class SSRNScraper:
 
                 # Scrape article
                 result = self.scrape_article(doi, title)
+
+                if result.get('browser_died'):
+                    print(
+                        f"\n✗ Aborting run: browser session died while processing {doi}; "
+                        "leaving this DOI pending for the next run."
+                    )
+                    stats['aborted'] = True
+                    break
 
                 # Save to database
                 self.repo.insert_ssrn_page(
@@ -1066,6 +1127,10 @@ class SSRNScraper:
         finally:
             # Clean up
             if self.driver:
-                self.driver.quit()
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
 
         return stats
