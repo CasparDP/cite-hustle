@@ -1,5 +1,6 @@
 """Data access layer for articles and SSRN data"""
 
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -10,6 +11,12 @@ from cite_hustle.paths import to_portable
 
 class ArticleRepository:
     """Repository for accessing and managing article data"""
+
+    # No SSRN search recorded yet: no row, or an abstract-only row from an enricher.
+    # Every SSRN search outcome sets ssrn_url, html_file_path, or error_message.
+    _SSRN_NOT_SEARCHED = """(s.doi IS NULL OR (
+        s.ssrn_url IS NULL AND s.html_file_path IS NULL AND s.error_message IS NULL
+    ))"""
 
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
@@ -140,7 +147,8 @@ class ArticleRepository:
                 ssrn_url = EXCLUDED.ssrn_url,
                 html_content = EXCLUDED.html_content,
                 html_file_path = EXCLUDED.html_file_path,
-                abstract = EXCLUDED.abstract,
+                -- SSRN abstract wins; a no-match keeps a CrossRef/OpenAlex abstract
+                abstract = COALESCE(EXCLUDED.abstract, ssrn_pages.abstract),
                 match_score = EXCLUDED.match_score,
                 error_message = EXCLUDED.error_message,
                 scraped_at = now()
@@ -153,8 +161,14 @@ class ArticleRepository:
         limit: Optional[int] = None,
         year_start: Optional[int] = None,
         year_end: Optional[int] = None,
+        skip_stage: Optional[str] = None,
+        recheck_days: int = 90,
     ) -> pd.DataFrame:
-        """Get articles missing abstracts (no SSRN abstract or empty)."""
+        """Get articles missing abstracts (no SSRN abstract or empty).
+
+        With skip_stage, leave out articles whose success/no_match attempt at that
+        processing_log stage is newer than recheck_days (failed attempts are retried).
+        """
         query = """
             SELECT a.doi, a.title, a.authors, a.year, a.journal_name
             FROM articles a
@@ -172,6 +186,17 @@ class ArticleRepository:
             params = [year_end]
         else:
             params = []
+
+        if skip_stage:
+            query += """
+              AND NOT EXISTS (
+                  SELECT 1 FROM processing_log pl
+                  WHERE pl.doi = a.doi AND pl.stage = ?
+                    AND pl.status IN ('success', 'no_match')
+                    AND pl.processed_at > ?
+              )
+            """
+            params += [skip_stage, datetime.now() - timedelta(days=recheck_days)]
 
         query += " ORDER BY a.year DESC"
         if limit:
@@ -236,12 +261,16 @@ class ArticleRepository:
         )
 
     def get_pending_ssrn_scrapes(self, limit: Optional[int] = None) -> pd.DataFrame:
-        """Get articles that need SSRN scraping"""
-        query = """
+        """Get articles never searched on SSRN.
+
+        Abstract enrichers (CrossRef, OpenAlex, ...) create ssrn_pages rows with only
+        an abstract; those articles still need an SSRN search for the PDF route.
+        """
+        query = f"""
             SELECT a.doi, a.title, a.authors, a.year, a.journal_name
             FROM articles a
             LEFT JOIN ssrn_pages s ON a.doi = s.doi
-            WHERE s.doi IS NULL
+            WHERE {self._SSRN_NOT_SEARCHED}
             ORDER BY a.year DESC
         """
         if limit:
@@ -908,10 +937,13 @@ class ArticleRepository:
         ).fetchone()[0]
 
         # Pending tasks
-        stats["pending_ssrn_scrapes"] = (
-            stats["total_articles"]
-            - self.conn.execute("SELECT COUNT(*) FROM ssrn_pages").fetchone()[0]
-        )
+        stats["pending_ssrn_scrapes"] = self.conn.execute(
+            f"""
+            SELECT COUNT(*) FROM articles a
+            LEFT JOIN ssrn_pages s ON a.doi = s.doi
+            WHERE {self._SSRN_NOT_SEARCHED}
+        """
+        ).fetchone()[0]
 
         stats["pending_pdf_downloads"] = self.conn.execute(
             """

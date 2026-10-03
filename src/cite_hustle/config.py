@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # Optional CrossRef "polite pool" / OpenAlex mailto; set via CITE_HUSTLE_CROSSREF_EMAIL.
     crossref_email: str = ""
     max_workers: int = 3
+    # Free keys raise rate limits; both APIs also work (slowly) without one.
+    openalex_api_key: str = ""
+    s2_api_key: str = ""
 
     # Scraping Settings
     crawl_delay: int = 10

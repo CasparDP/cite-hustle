@@ -182,3 +182,28 @@ def test_terminal_elsevier_residual_excludes_non_elsevier_paper(repo):
     add_terminal_residual(repo, doi, publisher="Wiley")
 
     assert terminal_residual_dois(repo) == set()
+
+
+def test_enrichment_abstract_does_not_hide_article_from_ssrn_queue(repo):
+    add_article(repo, "10.1/enriched")
+    add_article(repo, "10.1/searched")
+    repo.upsert_abstract("10.1/enriched", "An abstract from CrossRef or OpenAlex.")
+    repo.insert_ssrn_page("10.1/searched", None, None, None, None, 40, "No match above threshold")
+
+    pending = set(repo.get_pending_ssrn_scrapes()["doi"])
+
+    assert pending == {"10.1/enriched"}
+    assert repo.get_statistics()["pending_ssrn_scrapes"] == 1
+
+
+def test_ssrn_no_match_keeps_existing_enrichment_abstract(repo):
+    add_article(repo, "10.1/a")
+    repo.upsert_abstract("10.1/a", "Kept abstract.")
+
+    repo.insert_ssrn_page("10.1/a", None, None, None, None, 40, "No match above threshold")
+    assert repo.get_ssrn_page_by_doi("10.1/a")["abstract"] == "Kept abstract."
+
+    repo.insert_ssrn_page(
+        "10.1/a", "https://ssrn.com/abstract=1", None, "x.html", "SSRN abstract.", 95
+    )
+    assert repo.get_ssrn_page_by_doi("10.1/a")["abstract"] == "SSRN abstract."

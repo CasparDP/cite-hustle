@@ -299,11 +299,17 @@ def scrape(ctx, limit, delay, threshold, headless):
     except KeyboardInterrupt:
         click.echo("\n\n⚠️  Scraping interrupted by user")
         click.echo("Progress has been saved. Run the command again to continue.")
+        ctx.exit(1)
     except Exception as e:
         click.echo(f"\n❌ Error during scraping: {e}")
         import traceback
 
         traceback.print_exc()
+        ctx.exit(1)
+
+    # Non-zero exit stops chained runs (make pdfs) from hitting SSRN again
+    if stats.get("aborted"):
+        ctx.exit(1)
 
 
 @main.command(name="enrich-openalex")
@@ -392,6 +398,74 @@ def enrich_openalex(
             click.echo("   poetry run cite-hustle rebuild-fts")
 
     click.echo(f"\n{'=' * 60}\n")
+
+
+@main.command(name="enrich-abstracts")
+@click.option(
+    "--source",
+    "sources",
+    type=click.Choice(["crossref", "s2", "nber"]),
+    multiple=True,
+    default=("crossref", "s2", "nber"),
+    help="Abstract source(s), in order (repeatable; default: all three)",
+)
+@click.option("--limit", default=None, type=int, help="Max articles per API source")
+@click.option("--year-start", default=None, type=int, help="Start year filter")
+@click.option("--year-end", default=None, type=int, help="End year filter")
+@click.option(
+    "--recheck-days", default=90, type=int, help="Skip articles a source already tried recently"
+)
+@click.option("--delay", default=2.0, type=float, help="Seconds between API requests")
+@click.option(
+    "--skip-fts-rebuild", is_flag=True, help="Skip rebuilding FTS indexes after enrichment"
+)
+@click.pass_context
+def enrich_abstracts(
+    ctx, sources, limit, year_start, year_end, recheck_days, delay, skip_fts_rebuild
+):
+    """
+    Fill missing abstracts from CrossRef (cached responses), Semantic Scholar, and NBER.
+
+    Never overwrites an existing abstract. Set CITE_HUSTLE_S2_API_KEY for a higher
+    Semantic Scholar rate limit.
+
+    Examples:
+        cite-hustle enrich-abstracts
+        cite-hustle enrich-abstracts --source s2 --year-start 2020
+        cite-hustle enrich-abstracts --source nber --limit 500 --delay 3
+    """
+    from cite_hustle.collectors import abstract_sources
+
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+    total_updated = 0
+
+    for source in sources:
+        click.echo(f"\n📚 ABSTRACTS: {source}")
+        if source == "crossref":
+            stats = abstract_sources.backfill_from_crossref_cache(repo, settings.cache_dir)
+        else:
+            pending = repo.get_articles_missing_abstract(
+                limit=limit,
+                year_start=year_start,
+                year_end=year_end,
+                skip_stage=abstract_sources.stage_for(source),
+                recheck_days=recheck_days,
+            ).to_dict("records")
+            if source == "s2":
+                stats = abstract_sources.enrich_from_s2(repo, pending, delay_s=delay)
+            else:
+                stats = abstract_sources.enrich_from_nber(repo, pending, delay_s=delay)
+        total_updated += stats["updated"]
+        click.echo(
+            f"   candidates {stats['candidates']:,} | updated {stats['updated']:,}"
+            f" | no match {stats['no_match']:,} | failed {stats['failed']:,}"
+        )
+
+    if total_updated > 0 and not skip_fts_rebuild:
+        click.echo("\nRebuilding FTS indexes...")
+        db.create_fts_indexes()
+    click.echo(f"\n✓ {total_updated:,} abstracts added")
 
 
 @main.command()

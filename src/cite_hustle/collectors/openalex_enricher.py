@@ -86,6 +86,8 @@ class OpenAlexEnricher:
         params = {}
         if settings.crossref_email:
             params["mailto"] = settings.crossref_email
+        if settings.openalex_api_key:
+            params["api_key"] = settings.openalex_api_key
 
         for attempt in range(self.max_retries):
             await self._wait_for_global_backoff()

@@ -12,6 +12,7 @@ import httpx
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
+from cite_hustle.collectors.abstract_sources import crossref_abstract
 from cite_hustle.collectors.journals import Journal
 from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
@@ -287,6 +288,7 @@ class MetadataCollector:
                     "journal_issn": journal.issn,
                     "journal_name": journal.name,
                     "publisher": publisher,
+                    "abstract": crossref_abstract(article),
                 }
             )
 
@@ -342,6 +344,9 @@ class MetadataCollector:
             if transformed:
                 self.repo.bulk_insert_articles(transformed)
                 total_articles += len(transformed)
+                for row in transformed:
+                    if row["abstract"]:
+                        self.repo.upsert_abstract(row["doi"], row["abstract"], force=False)
 
                 # Log success
                 self.repo.log_processing(
