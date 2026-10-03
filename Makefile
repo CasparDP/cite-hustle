@@ -66,7 +66,7 @@ pipeline-monthly:
 	$(RUN) pipeline --profile monthly
 
 # ── Update (main workflow) ────────────────────────────────────────────────────
-# make update           → collect + enrich for current year (fast, no browser)
+# make update           → collect for current year (fast, no browser)
 # make update YEAR=2024 → same for a specific year
 # make update-full      → collect + scrape + enrich (includes Selenium SSRN scrape)
 

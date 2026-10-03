@@ -65,7 +65,7 @@ See [CLI-CHEATSHEET.md](./CLI-CHEATSHEET.md) for the full command reference.
 A `Makefile` wraps the common workflow:
 
 ```bash
-make update            # collect + enrich current year (fast, no browser)
+make update            # collect current year from CrossRef (fast, no browser)
 make update YEAR=2024  # same, for a specific year
 make download          # download pending SSRN PDFs (opens a browser)
 ```

@@ -219,7 +219,7 @@ cite-hustle download [OPTIONS]
 
 - `--limit <n>` - Limit number of PDFs to download (default: all pending)
 - `--delay <seconds>` - Base delay between downloads, jittered (default: `3`)
-- `--headless` / `--no-headless` - Run browser headless (default: visible). Headless is blocked by SSRN's Cloudflare; leave it off.
+- `--headless` / `--no-headless` - Compatibility flag only: `--headless` raises an error because SSRN's Cloudflare blocks headless Chrome. Leave it off.
 - `--retry-unavailable` - Also re-check papers previously marked "not available for download"
 
 **Examples:**

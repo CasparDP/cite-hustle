@@ -63,7 +63,6 @@ cite-hustle/
 │   ├── reset_failed_scrapes.py      # Reset failed SSRN scrapes for retry
 │   ├── cleanup_non_articles.py      # Remove non-article content from DB
 │   ├── cleanup_bad_ssrn_html.py     # Remove Cloudflare challenge HTML artifacts
-│   └── migrate_002_pdf_files.py     # One-time backfill of pdf_files from ssrn_pages
 ├── pyproject.toml             # Poetry config, dependencies, scripts
 ├── CLI-CHEATSHEET.md          # Complete CLI reference
 └── README.md                  # User documentation
@@ -77,7 +76,7 @@ cite-hustle/
 | Config | `config.py` | `Settings` class from pydantic-settings; storage at `$HOME/Dropbox/Github Data/cite-hustle/` |
 | Schema | `database/models.py` | Core, PDF, wiki, pipeline-run, and FTS schema |
 | Repository | `database/repository.py` | All DB operations: `insert_article`, `insert_ssrn_page`, `update_pdf_info`, `log_processing` |
-| CrossRef | `collectors/metadata.py` | `MetadataCollector` fetches article metadata via `crossref_commons` |
+| CrossRef | `collectors/metadata.py` | `MetadataCollector` fetches article metadata from the CrossRef REST API (httpx, cursor paging) |
 | SSRN Scraper | `collectors/ssrn_scraper.py` | `SSRNScraper` searches SSRN and extracts abstracts with visible SeleniumBase UC |
 | PDF Download | `collectors/selenium_pdf_downloader.py` | `SeleniumPDFDownloader` downloads SSRN PDFs with visible SeleniumBase UC |
 | OpenAlex | `collectors/openalex_enricher.py` | `OpenAlexEnricher` fetches missing abstracts via OpenAlex API (async) |
@@ -271,7 +270,6 @@ repo.insert_ssrn_page(doi, ssrn_url, html_content=None, html_file_path=html_path
 | `selenium` | Plain Selenium/Selenium Manager for authenticated EZproxy publisher access |
 | `undetected-chromedriver` + `selenium-stealth` | Legacy dependencies; current collectors do not import them |
 | `rapidfuzz` | Fuzzy string matching for SSRN results |
-| `crossref-commons` | CrossRef API client |
 | `beautifulsoup4` + `lxml` | HTML parsing |
 | `tqdm` | Progress bars |
 | `tenacity` | Retry logic with backoff |
