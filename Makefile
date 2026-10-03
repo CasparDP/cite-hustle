@@ -12,7 +12,9 @@ INGEST_BATCH   ?= 10
 ifeq ($(shell uname -s),Darwin)
 KEEP_AWAKE := caffeinate -i
 else
-KEEP_AWAKE := $(shell command -v systemd-inhibit >/dev/null && echo systemd-inhibit --what=idle:sleep --who=cite-hustle --why=downloads)
+# Best effort: polkit often denies inhibitors in remote-desktop (VM) sessions
+INHIBIT    := systemd-inhibit --what=idle:sleep --who=cite-hustle --why=downloads
+KEEP_AWAKE := $(shell $(INHIBIT) true >/dev/null 2>&1 && echo $(INHIBIT))
 endif
 
 # ── Quick status ──────────────────────────────────────────────────────────────
