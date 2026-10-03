@@ -4,17 +4,22 @@ import concurrent.futures
 import html
 import json
 import re
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import httpx
 from bs4 import BeautifulSoup
-from crossref_commons.iteration import iterate_publications_as_json
-from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
 from cite_hustle.collectors.journals import Journal
 from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
+
+
+CROSSREF_WORKS_URL = "https://api.crossref.org/works"
+CROSSREF_ROWS = 1000
+CROSSREF_MAX_ATTEMPTS = 5
 
 
 class MetadataCollector:
@@ -58,17 +63,49 @@ class MetadataCollector:
     # Valid CrossRef types for research articles
     VALID_TYPES = ["journal-article", "proceedings-article"]
 
-    def __init__(self, repo: ArticleRepository, cache_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        repo: ArticleRepository,
+        cache_dir: Optional[Path] = None,
+        http_client: Optional[httpx.Client] = None,
+    ):
         """
         Initialize metadata collector
 
         Args:
             repo: Article repository for database access
             cache_dir: Directory for caching API responses (defaults to settings.cache_dir)
+            http_client: HTTP client for CrossRef (injectable for tests)
         """
         self.repo = repo
         self.cache_dir = cache_dir or settings.cache_dir
         self.cache_dir.mkdir(exist_ok=True, parents=True)
+        user_agent = "cite-hustle/0.1"
+        if settings.crossref_email:
+            user_agent += f" (mailto:{settings.crossref_email})"
+        self.http = http_client or httpx.Client(
+            timeout=60, headers={"User-Agent": user_agent}, follow_redirects=True
+        )
+
+    def _get_works_page(self, params: Dict) -> Dict:
+        """GET one /works page, backing off on 429 and 5xx (honors Retry-After)."""
+        for attempt in range(CROSSREF_MAX_ATTEMPTS):
+            try:
+                response = self.http.get(CROSSREF_WORKS_URL, params=params)
+            except httpx.TransportError as e:
+                error = f"{type(e).__name__}: {e}"
+            else:
+                if response.status_code == 200:
+                    return response.json()["message"]
+                if response.status_code != 429 and response.status_code < 500:
+                    response.raise_for_status()
+                error = f"API returned code {response.status_code}"
+                retry_after = response.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    time.sleep(float(retry_after))
+                    continue
+            time.sleep(5.0 * 2**attempt)
+        raise ConnectionError(f"{error} after {CROSSREF_MAX_ATTEMPTS} attempts")
 
     @staticmethod
     def clean_title(title: str) -> str:
@@ -133,7 +170,6 @@ class MetadataCollector:
 
         return True
 
-    @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(3))
     def fetch_articles_by_issn(self, year: int, issn: str) -> List[Dict]:
         """
         Fetch articles from CrossRef API for a specific journal and year
@@ -156,24 +192,26 @@ class MetadataCollector:
                 print(f"⚠️  Corrupted cache file, re-fetching: {cache_file}")
                 cache_file.unlink()
 
-        # Fetch from CrossRef API using new library
+        params = {
+            "filter": f"issn:{issn},from-pub-date:{year}-01-01,until-pub-date:{year}-12-31",
+            "rows": CROSSREF_ROWS,
+            "cursor": "*",
+        }
+        if settings.crossref_email:
+            params["mailto"] = settings.crossref_email
+
         try:
-            # Set email for polite API usage via environment variable (if provided)
-            import os
-
-            if settings.crossref_email:
-                os.environ["CR_API_MAILTO"] = settings.crossref_email
-
-            filter_params = {
-                "issn": issn,
-                "from-pub-date": f"{year}-01-01",
-                "until-pub-date": f"{year}-12-31",
-            }
-
-            # Collect all articles
+            # Deep paging: CrossRef omits next-cursor on the last page, so stop on
+            # an empty or short page as well as on a missing cursor.
             articles = []
-            for article in iterate_publications_as_json(filter=filter_params):
-                articles.append(article)
+            while True:
+                message = self._get_works_page(params)
+                items = message.get("items", [])
+                articles.extend(items)
+                next_cursor = message.get("next-cursor")
+                if not items or not next_cursor or len(items) < CROSSREF_ROWS:
+                    break
+                params["cursor"] = next_cursor
 
             # Cache the results
             with open(cache_file, "w", encoding="utf-8") as f:
