@@ -65,10 +65,17 @@ See [CLI-CHEATSHEET.md](./CLI-CHEATSHEET.md) for the full command reference.
 A `Makefile` wraps the common workflow:
 
 ```bash
-make update            # collect current year from CrossRef (fast, no browser)
+make doctor            # readiness check for this machine (env, Chrome, display, keys)
+make update            # collect current year from CrossRef, incl. CrossRef abstracts
 make update YEAR=2024  # same, for a specific year
-make download          # download pending SSRN PDFs (opens a browser)
+make abstracts         # fill missing abstracts: CrossRef cache, OpenAlex, Semantic Scholar, NBER
+make smoke-ssrn        # Cloudflare smoke test on a throwaway DB (visible browser)
+make pdfs              # one slow SSRN batch (search + PDF), then free fallbacks
+make process           # verify PDFs, ingest into the wiki, rebuild indexes
 ```
+
+SSRN pacing is set by `BATCH`, `SCRAPE_DELAY`, and `DOWNLOAD_DELAY` (defaults 50,
+30 s, 45 s), e.g. `make pdfs BATCH=200`.
 
 ### Typical workflow
 
@@ -79,8 +86,10 @@ poetry run cite-hustle collect --field accounting --year-start 2023 --year-end 2
 # 2. Recover abstracts from SSRN (use a generous delay for large runs)
 poetry run cite-hustle scrape --limit 50 --delay 70
 
-# 3. Fill any remaining abstracts from OpenAlex (no browser needed)
+# 3. Fill remaining abstracts (no browser): OpenAlex, then CrossRef cache,
+#    Semantic Scholar, and NBER landing pages
 poetry run cite-hustle enrich-openalex --year-start 2023 --year-end 2024
+poetry run cite-hustle enrich-abstracts --year-start 2023 --year-end 2024
 
 # 4. Download available SSRN PDFs
 poetry run cite-hustle download

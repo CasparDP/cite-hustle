@@ -53,12 +53,13 @@ cite-hustle/
 │       ├── ssrn_scraper.py    # Visible SeleniumBase-UC SSRN search + abstracts
 │       ├── selenium_pdf_downloader.py  # Visible SeleniumBase-UC SSRN downloads
 │       ├── openalex_enricher.py        # OpenAlex API enricher (async, fetches missing abstracts)
+│       ├── abstract_sources.py         # CrossRef cache / Semantic Scholar / NBER abstract sources
 │       ├── fallback_resolvers.py       # OA/NBER/arXiv PDF resolvers (post-SSRN fallback)
 │       ├── http_pdf_downloader.py      # Plain HTTP PDF download for fallback sources
 │       ├── institutional.py            # Plain-Selenium authenticated EZproxy downloads
 │       ├── publisher_pdf.py            # Publisher URL/PDF-link extraction helpers
 │       └── pdf_downloader.py  # Legacy HTTP downloader (usually blocked by Cloudflare)
-├── deploy/                    # Runner-laptop deployment (launchd plists, install.sh, README)
+├── deploy/                    # Runner deployment (doctor.sh, Linux + macOS checklists, launchd)
 ├── scripts/
 │   ├── reset_failed_scrapes.py      # Reset failed SSRN scrapes for retry
 │   ├── cleanup_non_articles.py      # Remove non-article content from DB
@@ -132,6 +133,10 @@ poetry run cite-hustle search "Smith" --author
 poetry run cite-hustle enrich-openalex --limit 200
 poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
 poetry run cite-hustle enrich-openalex --force --skip-fts-rebuild
+
+# More abstract sources: CrossRef cache (no API), Semantic Scholar batch, NBER landing pages
+poetry run cite-hustle enrich-abstracts
+poetry run cite-hustle enrich-abstracts --source s2 --year-start 2020
 
 # Fallback PDF resolution (after SSRN fails: OpenAlex OA -> NBER -> arXiv)
 poetry run cite-hustle resolve-fallbacks --limit 200
@@ -248,6 +253,11 @@ repo.upsert_abstract(doi, abstract, force=False)   # idempotent; won't overwrite
 count = repo.get_openalex_enriched_count()         # tracks via processing_log stage='enrich_openalex'
 ```
 
+Abstracts from any enricher live in `ssrn_pages.abstract` on a row with no
+`ssrn_url`/`html_file_path`/`error_message`. `get_pending_ssrn_scrapes` treats such rows
+as never searched (`ArticleRepository._SSRN_NOT_SEARCHED`), and `insert_ssrn_page` keeps
+the existing abstract when SSRN finds none. Never key "SSRN tried" on row existence.
+
 ### HTML Storage Pattern
 ```python
 # Save HTML to disk, store only path in DB
@@ -331,6 +341,8 @@ fts_main_ssrn_pages (on abstract)
 | Paths wrong across machines | Check `$HOME/Dropbox/Github Data/cite-hustle` exists or set `CITE_HUSTLE_*` env vars |
 | ChromeDriver not found | Install/update Chrome and run `poetry install`. SeleniumBase manages the SSRN UC driver; Selenium Manager resolves the plain institutional driver. Do not pin a driver unless diagnosing a specific failure |
 | DuckDB lock error | Close other DuckDB connections (CLI tools, notebooks) |
+| `Your Mac needs Rosetta 2 to use UC Mode!` / `Bad CPU type in executable` | SeleniumBase UC fetches an x86 `uc_driver` on Apple Silicon; install Rosetta (`softwareupdate --install-rosetta`) |
+| `collect` logs `KeyError 'next-cursor'` | Stale checkout still using `crossref-commons`; pull and `poetry install` (fixed 2026-10) |
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
 | Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
 | `enrich-openalex` shows thousands of candidates unexpectedly | Candidates = ALL articles for that year missing abstracts, not just newly added ones -- use `make enrich-year` separately, not inline with collect |
@@ -418,7 +430,8 @@ poetry run python extract_abstracts_from_html.py
 - **Legacy HTTP PDF downloader** remains disabled; always use Selenium path (SSRN only; fallback sources use plain HTTP)
 - **HTML content** stored on disk, not in DB (reduces DB size, enables external analysis)
 - **Portable paths** use `$HOME/...` format for cross-machine compatibility
-- **Single writer** (2026-07): the dedicated runner laptop is the only machine that writes to the DB; other machines use read-only commands. See `deploy/README.md`.
+- **Single writer** (2026-07): the dedicated runner is the only machine that writes to the DB; other machines use read-only commands. See `deploy/README.md`.
+- **Runner is the Ubuntu desktop VM** (2026-10, `ubuntu-vm`, GPU, expires in a few months): it runs everything, including verify and wiki ingestion; the Macs stay read-only. Setup is machine-agnostic (`make doctor`, Linux/macOS checklists in `deploy/README.md`).
 - **Verification precedes wiki ingestion**: only `pdf_files.verify_status = 'match'` PDFs are ingested; mismatches are quarantined to `pdfs/quarantine/` and the SSRN path marked unavailable so fallbacks take over.
 - **Wiki lives at** `$HOME/Dropbox/Github Data/cite-hustle/wiki/` in process-paper format (`sources/`, `concepts/`, auto-generated `indexes/`); summaries are produced by the external process-paper skill (deep depth), never by reimplementing it here.
 - **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact). The authenticated publisher stage runs last, only after the SSRN/free-source path; do not add unauthenticated paywall scraping.
@@ -432,3 +445,5 @@ poetry run python extract_abstracts_from_html.py
 - **Elsevier remains manual** (2026-08): VPN entitlement plus a human CAPTCHA click can yield the `/pdfft` PDF, but saved browser state did not make the next run unattended. The API is not usable without a key. No experimental route is retained.
 - **pdfgrabba export is implemented** (2026-08): `export-pdfgrabba` opens DuckDB read-only and appends only terminal Elsevier residuals (no PDF; SSRN exhausted; `oa`, `nber`, and `arxiv` all exact `no_match`) to an explicitly supplied manifest. Existing state wins, DOI deduplication is normalized, writes are atomic, missing manifests require `--create`, and the command is not scheduled. The live dry-run selected the 48-row baseline; the six retryable error rows stayed excluded. Never run it during an active pdfgrabba manifest rewrite.
 - **pdfgrabba return path is implemented** (2026-08): the paper-agnostic manifest is `$HOME/Dropbox/Github Data/cite-hustle/pdfs/download_manifest.json`. Runner-only `import-pdfgrabba` reads completed `downloaded`/`skipped` entries, validates known DOI + safe filename + PDF magic, preserves existing PDF state, and inserts source=`pdfgrabba` rows as verification `pending`. It never edits the manifest and is not scheduled; follow with `verify-pdfs` and `wiki-ingest`.
+- **CrossRef is paged directly with httpx** (2026-10): `crossref-commons` 0.0.7 crashed on the final page (`KeyError 'next-cursor'`) and never backed off on 429. `collect` now also stores CrossRef's own abstract.
+- **Abstract sources** (2026-10): CrossRef (collect + cache backfill), OpenAlex (optional free key), Semantic Scholar (DOI-exact batch), NBER landing pages (near-exact title plus shared author surname, because abstracts get no downstream verification). Extracting abstracts from PDFs was deferred: every verified PDF already had one. Enrichment rows must not hide an article from the SSRN queue; 1,234 articles had been skipped this way before the fix.

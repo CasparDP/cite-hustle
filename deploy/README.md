@@ -1,13 +1,68 @@
 # Runner deployment
 
-The pipeline runs unattended on the dedicated runner machine (currently the
-user's M2 Mac; always awake, user logged in). SSRN's Cloudflare protection
-requires a **visible** SeleniumBase UC Chrome window, so browser stages run as a
-LaunchAgent inside the GUI session, never as a LaunchDaemon, and the screen must
-stay unlocked. The SSRN collectors use `uc_open_with_reconnect()` and are
-live-verified on Chrome 151.
+One dedicated runner is the **only machine that writes the database**; every other
+machine stays read-only. Current runner (2026-10): the Ubuntu desktop VM
+(`ubuntu-vm`, GPU), which expires in a few months. Nothing is VM-specific: all state
+(DB, PDFs, wiki, CrossRef cache, reports) lives in Dropbox, and a runner holds only
+the repo checkout, the Poetry venvs, `.env`, and the local EZproxy Chrome profile.
 
-## Provisioning checklist
+SSRN's Cloudflare protection requires a **visible** SeleniumBase UC Chrome window on
+an unlocked desktop, so browser stages run inside the GUI session, never over SSH or
+as a system service.
+
+## Linux runner (Ubuntu desktop)
+
+1. Install Google Chrome (the `.deb` from google.com/chrome; not the chromium snap),
+   Dropbox (wait until `~/Dropbox/Github Data/cite-hustle/` is fully synced), git,
+   make, and Poetry (`pipx install poetry`).
+2. Clone both repos and install:
+   ```bash
+   git clone <cite-hustle remote> ~/Github/cite-hustle
+   git clone <dot-files remote>   ~/Github/dot-files
+   cd ~/Github/cite-hustle && poetry install
+   cd ~/Github/dot-files/claude/skills/process-paper && poetry install
+   ```
+3. Configuration: copy `.env.example` to `.env` and set at least
+   `CITE_HUSTLE_CROSSREF_EMAIL` (CrossRef answers 429 without it); optionally
+   `CITE_HUSTLE_OPENALEX_API_KEY` and `CITE_HUSTLE_S2_API_KEY`. Export
+   `OLLAMA_API_KEY` in `~/.profile`.
+4. Keep the desktop unlocked and the display on:
+   ```bash
+   gsettings set org.gnome.desktop.session idle-delay 0
+   gsettings set org.gnome.desktop.screensaver lock-enabled false
+   ```
+5. From a terminal **inside the desktop session**:
+   ```bash
+   make doctor       # must end with "Ready."
+   make smoke-ssrn   # visible Cloudflare test on a throwaway DB; check PDFs appear
+   ```
+6. Regular runs (all resumable; rerun until nothing is pending):
+   ```bash
+   make update && make abstracts      # new issues + abstracts (no browser)
+   make pdfs                          # slow SSRN batch + free fallbacks (visible browser)
+   make process                       # verify PDFs, wiki ingestion, indexes
+   ```
+   Pace SSRN with `BATCH`, `SCRAPE_DELAY`, `DOWNLOAD_DELAY`. `scrape` exits non-zero
+   on a suspected Cloudflare block, which stops `make pdfs` before the download step;
+   wait (hours) before retrying.
+
+The launchd schedule below is macOS-only; no Linux scheduler is set up yet.
+
+## Moving to a new runner
+
+1. Stop all runs on the old runner and let Dropbox finish syncing (no
+   `articles.duckdb.wal`, no conflicted copies).
+2. Provision the new machine with the checklist for its OS, then `make doctor`.
+3. Run `cite-hustle login` once if the institutional stage is needed (the EZproxy
+   session lives in the local Chrome profile, never in Dropbox).
+4. Record the new runner here and in `CLAUDE.md`.
+
+## macOS runner
+
+UC mode on Apple Silicon needs Rosetta 2 (`softwareupdate --install-rosetta`):
+SeleniumBase fetches an x86 `uc_driver`.
+
+### Provisioning checklist (macOS)
 
 1. Install: Google Chrome, Dropbox (sign in, wait until
    `~/Dropbox/Github Data/cite-hustle/` is fully synced), Homebrew, Poetry.
@@ -71,9 +126,9 @@ schedules may still log retryable ScienceDirect institutional failures.
 
 ## Single-writer discipline (DuckDB on Dropbox)
 
-**This machine is the only one that writes to the database.** Other
-machines should stick to read-only commands (`status`, `dashboard`, `search`,
-`sample`, `wiki-index`). While a pipeline run holds the write lock, read-only
+**The runner is the only machine that writes to the database.** Other
+machines should stick to read-only commands (`status`, `dashboard`, `journals`,
+`search`, `sample`, `wiki-index`, `export-pdfgrabba`). While a pipeline run holds the write lock, read-only
 commands on other machines will wait/fail with the standard lock message; the
 schedule above tells you when runs happen.
 
@@ -109,6 +164,6 @@ profile while it is already open; Chrome profiles are single-process resources.
 
 | Concern | Machine |
 |---|---|
-| Scheduled pipeline (writes) | Runner (M2 machine) |
+| All writes (collect, scrape, download, abstracts, verify, wiki) | Runner (Ubuntu VM) |
 | Ad-hoc queries, wiki reading, deep-writer | Any machine (read-only) |
-| Manual maintenance scripts | Runner (M2 machine), outside run windows |
+| Manual maintenance scripts | Runner, outside run windows |

@@ -207,6 +207,26 @@ cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 
 ---
 
+### `enrich-abstracts`
+Fill missing abstracts from sources beyond SSRN and OpenAlex. Never overwrites an
+existing abstract, and does not take the article out of the SSRN search queue.
+
+```bash
+cite-hustle enrich-abstracts                       # crossref, s2, nber in order
+cite-hustle enrich-abstracts --source crossref     # cached CrossRef responses, no API calls
+cite-hustle enrich-abstracts --source s2 --year-start 2020
+cite-hustle enrich-abstracts --source nber --limit 500 --delay 3
+```
+
+- `crossref`: abstracts already in `cache/cache_{issn}_{year}.json` (`collect` also
+  stores them for new articles).
+- `s2`: Semantic Scholar batch API, DOI-exact, 500 DOIs per request. Set
+  `CITE_HUSTLE_S2_API_KEY` for a dedicated rate limit.
+- `nber`: NBER working-paper landing page. Requires a near-exact title and a shared
+  author surname; yields mainly for economics and finance.
+- `--recheck-days` (default 90): skip articles a source already tried (success or
+  no match) within this window; failed attempts are retried.
+
 ### 4. `download`
 
 Download available SSRN PDFs for scraped articles.
