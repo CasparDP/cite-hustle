@@ -28,7 +28,7 @@ Updated: 2026-10-05 (print years, front-matter cleanup, HTML dashboard)
 - **Makefile**: `doctor`, `smoke-ssrn`, `pdfs`, `abstracts`, `process`; slow SSRN defaults
   (`BATCH=50`, `SCRAPE_DELAY=30`, `DOWNLOAD_DELAY=45`); `KEEP_AWAKE` uses caffeinate or
   systemd-inhibit. `scrape` exits 1 on a Cloudflare abort, which stops `make pdfs`.
-- Tests: 118 passed. pi review saved in
+- Tests: 125 passed (2026-10-05). pi review saved in
   `quality_reports/2026-10-03_pi_review_vm-runner-abstracts.md`.
 
 ## Data fixes ready to run on the VM (2026-10-05)
@@ -47,9 +47,9 @@ Updated: 2026-10-05 (print years, front-matter cleanup, HTML dashboard)
 
 ## Not yet verified
 
-- **Cloudflare on the VM.** `make smoke-ssrn` has not run anywhere yet. On this M4 it
-  failed before reaching SSRN because SeleniumBase UC fetches an x86 `uc_driver` and
-  Rosetta is not installed. Run it on the VM from a terminal inside the desktop session.
+- **Cloudflare on the VM passed:** `make smoke-ssrn` worked on the VM (2026-10-05). It cannot
+  run on the M4 until Rosetta is installed (SeleniumBase UC fetches an x86 `uc_driver`).
+- A killed VM run left a WAL on 2026-10-04; `make recover-db` merged it.
 - SSH to `ubuntu-vm` was refused (publickey); probably the key needs `ssh-add`.
 - The VM's `.env` likely lacks `CITE_HUSTLE_CROSSREF_EMAIL`; `make doctor` flags it.
 - process-paper on the VM (dot-files clone, its Poetry env, `OLLAMA_API_KEY`, docling
