@@ -175,9 +175,9 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
     </div>
   </div>
 
-  <p class="note">Suspected non-articles: untitled issue-level DOIs, or a title that occurs at
-    least three times in one journal (mastheads, "Forthcoming Papers", prize notices).
-    "SSRN searched" counts articles with any recorded SSRN outcome.</p>
+  <p class="note">Suspected non-articles: front matter by title (mastheads, reports, calls for
+    papers, indexes, prize notices) or untitled issue-level DOIs; the rule set lives in
+    <code>front_matter.py</code>. "SSRN searched" counts articles with any recorded SSRN outcome.</p>
 </main>
 <div id="tip"></div>
 

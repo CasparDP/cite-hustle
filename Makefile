@@ -1,4 +1,5 @@
 YEAR ?= $(shell date +%Y)
+UPDATE_FROM := $(shell echo $$(($(YEAR) - 2)))
 RUN   := poetry run cite-hustle
 
 # SSRN runs in a visible browser and must stay slow to avoid Cloudflare blocks.
@@ -116,14 +117,28 @@ pipeline-monthly:
 	$(RUN) pipeline --profile monthly
 
 # ── Update (main workflow) ────────────────────────────────────────────────────
-# make update           → collect for current year (fast, no browser; stores CrossRef abstracts)
+# make update           → collect the last three years (fast, no browser; stores CrossRef abstracts)
 # make update YEAR=2024 → same for a specific year
 # make update-full      → collect + scrape + enrich (includes Selenium SSRN scrape)
 
-.PHONY: update update-full
+.PHONY: update update-full refresh-metadata cleanup-non-articles cleanup-non-articles-apply
 
+# Three years: a paper is found under its online-first year (CrossRef's date filter) and
+# moves to its print year once in an issue; online-to-print lags reach two years (JFQA)
 update:
-	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force
+	$(RUN) collect --field all --year-start $(UPDATE_FROM) --year-end $(YEAR) --force
+
+# Occasional full refresh: re-fetch every year so stored years follow CrossRef's print dates
+REFRESH_START ?= 1980
+refresh-metadata:
+	$(RUN) collect --field all --year-start $(REFRESH_START) --year-end $(YEAR) --force
+
+# Front matter (mastheads, reports, calls for papers): dry run, then apply (backs up first)
+cleanup-non-articles:
+	$(RUN) cleanup-non-articles
+
+cleanup-non-articles-apply:
+	$(RUN) cleanup-non-articles --apply --backup-dir $(CURDIR)/.db-backups
 
 update-full:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force

@@ -1,6 +1,6 @@
 # cite-hustle session handoff
 
-Updated: 2026-10-03 (VM runner, CrossRef fix, new abstract sources)
+Updated: 2026-10-05 (print years, front-matter cleanup, HTML dashboard)
 
 ## Current state
 
@@ -31,6 +31,20 @@ Updated: 2026-10-03 (VM runner, CrossRef fix, new abstract sources)
 - Tests: 118 passed. pi review saved in
   `quality_reports/2026-10-03_pi_review_vm-runner-abstracts.md`.
 
+## Data fixes ready to run on the VM (2026-10-05)
+
+- `articles.year` is now the citation (print) year; re-collecting updates it. Write
+  connections drop `idx_articles_year` automatically (it blocked year updates).
+- Front matter is filtered at collect time and removable with `cleanup-non-articles`.
+- Verified on a copy of the live DB: Management Science 2024/2025/2026 became 445/457/703
+  (was 445/792/368); JFQA 2024 115 (CrossRef print-2024: 134); cleanup deleted 4,724
+  records (3 with PDFs kept), no orphans, backup written, 5.7 s.
+- Run order on the VM: `git pull`, `make refresh-metadata` (1980 to now, about 2,000
+  CrossRef requests), `make cleanup-non-articles` (dry run), `make cleanup-non-articles-apply`.
+- Not done, needs sign-off: about 2,280 papers stored under two DOIs (mostly JSTOR
+  `10.2307/` beside the publisher DOI; Journal of Finance 1,440).
+- HTML dashboard: `make dashboard` writes `reports/dashboard.html`.
+
 ## Not yet verified
 
 - **Cloudflare on the VM.** `make smoke-ssrn` has not run anywhere yet. On this M4 it
@@ -57,5 +71,4 @@ make process
 - One writer only. Never run write commands on a Mac while the VM is the runner.
 - If Cloudflare blocks (scrape aborts), stop and wait hours; do not retry in a loop.
 - `pdf_files`/`pdf_candidates` semantics and `tests/test_ssrn_blocking.py` are locked.
-- Dead code to consider removing (not done): `collectors/pdf_downloader.py`;
-  `scripts/cleanup_non_articles.py` now hits foreign keys on articles with PDFs/wiki pages.
+- Dead code to consider removing (not done): `collectors/pdf_downloader.py`.

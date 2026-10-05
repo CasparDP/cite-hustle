@@ -45,6 +45,12 @@ class DatabaseManager:
         self.conn.execute("INSTALL fts;")
         self.conn.execute("LOAD fts;")
 
+        if not read_only:
+            # Migration: DuckDB applies an update of an indexed column as delete+insert,
+            # which violates the foreign keys on articles, so re-collected years could
+            # not be corrected. The index bought nothing on ~80k rows. Idempotent.
+            self.conn.execute("DROP INDEX IF EXISTS idx_articles_year")
+
         return self.conn
     
     def initialize_schema(self):
@@ -187,7 +193,6 @@ class DatabaseManager:
     def _create_indexes(self):
         """Create indexes for better query performance"""
         indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_articles_year ON articles(year);",
             "CREATE INDEX IF NOT EXISTS idx_articles_journal ON articles(journal_issn);",
             "CREATE INDEX IF NOT EXISTS idx_ssrn_downloaded ON ssrn_pages(pdf_downloaded);",
             "CREATE INDEX IF NOT EXISTS idx_processing_log_doi ON processing_log(doi);",

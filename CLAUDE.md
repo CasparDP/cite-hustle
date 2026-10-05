@@ -35,6 +35,8 @@ cite-hustle/
 │   ├── cli/commands.py        # CLI entrypoint (Click) - all subcommands here
 │   ├── config.py              # Settings (pydantic-settings), env vars CITE_HUSTLE_*
 │   ├── matching.py            # Shared fuzzy title/author matching helpers
+│   ├── front_matter.py        # Front-matter rule set (collector filter, cleanup, dashboard)
+│   ├── dashboard_html.py      # Self-contained HTML dashboard (reports/dashboard.html)
 │   ├── paths.py               # Portable $HOME/... path conversion for DB-stored paths
 │   ├── acquire.py             # Ordered fallback/institutional acquisition orchestration
 │   ├── pdfgrabba_export.py    # One-way terminal Elsevier manifest bridge
@@ -62,7 +64,6 @@ cite-hustle/
 ├── deploy/                    # Runner deployment (doctor.sh, Linux + macOS checklists, launchd)
 ├── scripts/
 │   ├── reset_failed_scrapes.py      # Reset failed SSRN scrapes for retry
-│   ├── cleanup_non_articles.py      # Remove non-article content from DB
 │   ├── cleanup_bad_ssrn_html.py     # Remove Cloudflare challenge HTML artifacts
 ├── pyproject.toml             # Poetry config, dependencies, scripts
 ├── CLI-CHEATSHEET.md          # Complete CLI reference
@@ -342,6 +343,7 @@ fts_main_ssrn_pages (on abstract)
 | ChromeDriver not found | Install/update Chrome and run `poetry install`. SeleniumBase manages the SSRN UC driver; Selenium Manager resolves the plain institutional driver. Do not pin a driver unless diagnosing a specific failure |
 | DuckDB lock error | Close other DuckDB connections (CLI tools, notebooks) |
 | `Your Mac needs Rosetta 2 to use UC Mode!` / `Bad CPU type in executable` | SeleniumBase UC fetches an x86 `uc_driver` on Apple Silicon; install Rosetta (`softwareupdate --install-rosetta`) |
+| `collect` fails with `Violates foreign key constraint` on `articles` | An old `idx_articles_year` makes DuckDB apply year updates as delete+insert. Write connections drop it automatically since 2026-10; pull and rerun |
 | `collect` logs `KeyError 'next-cursor'` | Stale checkout still using `crossref-commons`; pull and `poetry install` (fixed 2026-10) |
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
 | Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
@@ -400,12 +402,17 @@ poetry run cite-hustle scrape --limit 100
 
 **Why this exists**: The `get_pending_ssrn_scrapes()` method only returns articles with NO entry in `ssrn_pages`. Failed scrapes have entries (with error messages), so they won't be retried automatically. This script deletes those failed entries, making them "pending" again.
 
-### Cleanup Non-Articles (`scripts/cleanup_non_articles.py`)
+### Remove front matter (`cleanup-non-articles`)
 
-Removes book reviews, front matter, covers, and other non-article content collected before filtering was added.
+Mastheads, reports, calls for papers, indexes and issue-level DOIs that CrossRef labels
+`journal-article`. Same rule set (`front_matter.py`) as the collector filter and the
+dashboard flag. Dry run by default; `--apply` checkpoints, copies the DB to
+`.db-backups/<timestamp>/`, deletes, and rebuilds FTS. Records with a PDF or wiki page are
+only listed. Runner only.
 
 ```bash
-poetry run python scripts/cleanup_non_articles.py
+make cleanup-non-articles         # dry run
+make cleanup-non-articles-apply
 ```
 
 ### Cleanup Bad SSRN HTML (`scripts/cleanup_bad_ssrn_html.py`)
@@ -447,3 +454,6 @@ poetry run python extract_abstracts_from_html.py
 - **pdfgrabba return path is implemented** (2026-08): the paper-agnostic manifest is `$HOME/Dropbox/Github Data/cite-hustle/pdfs/download_manifest.json`. Runner-only `import-pdfgrabba` reads completed `downloaded`/`skipped` entries, validates known DOI + safe filename + PDF magic, preserves existing PDF state, and inserts source=`pdfgrabba` rows as verification `pending`. It never edits the manifest and is not scheduled; follow with `verify-pdfs` and `wiki-ingest`.
 - **CrossRef is paged directly with httpx** (2026-10): `crossref-commons` 0.0.7 crashed on the final page (`KeyError 'next-cursor'`) and never backed off on 429. `collect` now also stores CrossRef's own abstract.
 - **Abstract sources** (2026-10): CrossRef (collect + cache backfill), OpenAlex (optional free key), Semantic Scholar (DOI-exact batch), NBER landing pages (near-exact title plus shared author surname, because abstracts get no downstream verification). Extracting abstracts from PDFs was deferred: every verified PDF already had one. Enrichment rows must not hide an article from the SSRN queue; 1,234 articles had been skipped this way before the fix.
+- **`articles.year` is the citation (print) year** (2026-10): `published-print`, else the issue's print date, else CrossRef's `issued` (online-first) date. Re-collecting updates the year (`ON CONFLICT ... year = EXCLUDED.year`). CrossRef's date filter matches the earliest date, so a paper is found under its online year: `make update` covers three years, and `make refresh-metadata` re-fetches everything. `idx_articles_year` was dropped because DuckDB rejected year updates on referenced rows.
+- **Front matter is filtered and removed** (2026-10): one anchored whole-title rule set in `front_matter.py` (plus issue-level DOIs) drives the collector filter, `cleanup-non-articles`, and the dashboard. "Discussion", "Comment", "Reply", "Dialogue", "Correspondence", "Introduction" are kept. The earlier "title repeated >= 3 times" heuristic was rejected: it also matched real papers stored under several DOIs.
+- **Known duplicates, not yet removed** (2026-10): about 2,280 papers exist under two DOIs, mostly a JSTOR `10.2307/` DOI beside the publisher DOI (Journal of Finance 1,440), plus old/new AMR DOI formats and Elsevier/SAGE DOIs for Journal of Management.

@@ -191,12 +191,15 @@ def run_institutional_batch(
 
 
 def _crossref_year(msg: dict) -> Optional[int]:
-    """Publication year from a CrossRef message, or None if it has none."""
-    for key in ("issued", "published-print", "published-online"):
-        parts = (msg.get(key) or {}).get("date-parts") or []
+    """Citation (print) year from a CrossRef message, or None if it has none."""
+    from cite_hustle.collectors.metadata import MetadataCollector
+
+    year = MetadataCollector.citation_year(msg)
+    if year is None:
+        parts = (msg.get("published-online") or {}).get("date-parts") or []
         if parts and parts[0] and parts[0][0]:
-            return int(parts[0][0])
-    return None
+            year = int(parts[0][0])
+    return year
 
 
 def fetch_crossref_article(doi: str) -> Optional[dict]:

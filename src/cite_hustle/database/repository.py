@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from cite_hustle import front_matter
 from cite_hustle.database.models import DatabaseManager
 from cite_hustle.paths import to_portable
 
@@ -41,6 +42,7 @@ class ArticleRepository:
             ON CONFLICT (doi) DO UPDATE SET
                 title = EXCLUDED.title,
                 authors = EXCLUDED.authors,
+                year = EXCLUDED.year,
                 updated_at = now()
         """,
             [doi, title, authors, year, journal_issn, journal_name, publisher],
@@ -60,6 +62,7 @@ class ArticleRepository:
             ON CONFLICT (doi) DO UPDATE SET
                 title = EXCLUDED.title,
                 authors = EXCLUDED.authors,
+                year = EXCLUDED.year,
                 updated_at = now()
         """
         )
@@ -870,16 +873,8 @@ class ArticleRepository:
 
         return [dict(zip(["journal_name", "count"], row)) for row in result]
 
-    # Records that look like front matter rather than research articles: untitled
-    # issue-level DOIs, or a title repeated >= 3 times in one journal (mastheads,
-    # "Forthcoming Papers", "Report of Independent Auditor", ...). Needs alias `a`.
-    _SUSPECTED_NON_ARTICLE = r"""(
-        lower(a.title) = 'no title available'
-        OR regexp_matches(a.doi, '\.issue-[0-9a-z]+$|\.v[0-9]+\.[0-9]+$|ahead-of-print$')
-        OR COUNT(*) OVER (
-            PARTITION BY a.journal_issn, regexp_replace(lower(a.title), '[^a-z0-9]', '', 'g')
-        ) >= 3
-    )"""
+    # Front matter (mastheads, reports, calls, issue-level DOIs); shared rule set
+    _SUSPECTED_NON_ARTICLE = front_matter.sql_predicate("a")
 
     def get_dashboard_data(self, recent_per_journal: int = 25) -> Dict[str, List[Dict]]:
         """Everything the HTML dashboard needs, as JSON-ready lists of dicts."""
@@ -948,6 +943,57 @@ class ArticleRepository:
             """
             ),
         }
+
+    def get_front_matter_candidates(self) -> pd.DataFrame:
+        """Front-matter records, with flags for rows that must not be deleted blindly."""
+        return self.conn.execute(
+            f"""
+            SELECT a.doi, a.title, a.journal_name, a.year,
+                   EXISTS (SELECT 1 FROM pdf_files p WHERE p.doi = a.doi) AS has_pdf,
+                   EXISTS (SELECT 1 FROM wiki_pages w WHERE w.doi = a.doi) AS has_wiki
+            FROM articles a
+            WHERE {self._SUSPECTED_NON_ARTICLE}
+            ORDER BY a.journal_name, a.year
+        """
+        ).fetchdf()
+
+    def delete_articles(self, dois: List[str]) -> Dict[str, int]:
+        """Delete articles and their ssrn_pages/pdf_candidates/processing_log rows.
+
+        Callers must exclude articles with pdf_files or wiki_pages rows. DuckDB checks
+        foreign keys against the transaction's starting state, so child rows and the
+        articles are deleted in two separate transactions.
+        """
+        if not dois:
+            return {}
+        self.conn.execute("CREATE OR REPLACE TEMP TABLE _delete_dois (doi VARCHAR PRIMARY KEY)")
+        try:
+            self.conn.executemany("INSERT INTO _delete_dois VALUES (?)", [[d] for d in dois])
+            # Never delete an article that has a PDF or wiki page, whatever the caller passed
+            self.conn.execute(
+                """
+                DELETE FROM _delete_dois WHERE doi IN (SELECT doi FROM pdf_files)
+                                            OR doi IN (SELECT doi FROM wiki_pages)
+            """
+            )
+            counts = {}
+            self.conn.execute("BEGIN")
+            try:
+                for table in ("ssrn_pages", "pdf_candidates", "processing_log"):
+                    counts[table] = self.conn.execute(
+                        f"DELETE FROM {table} WHERE doi IN (SELECT doi FROM _delete_dois)"
+                    ).fetchone()[0]
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+            # Single statement, so atomic on its own; must follow the children's commit
+            counts["articles"] = self.conn.execute(
+                "DELETE FROM articles WHERE doi IN (SELECT doi FROM _delete_dois)"
+            ).fetchone()[0]
+            return counts
+        finally:
+            self.conn.execute("DROP TABLE IF EXISTS _delete_dois")
 
     def get_recent_processing(self, limit: int = 10) -> List[Dict]:
         """Get most recent processing log entries."""

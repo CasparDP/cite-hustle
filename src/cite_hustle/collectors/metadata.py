@@ -16,6 +16,7 @@ from cite_hustle.collectors.abstract_sources import crossref_abstract
 from cite_hustle.collectors.journals import Journal
 from cite_hustle.config import settings
 from cite_hustle.database.repository import ArticleRepository
+from cite_hustle.front_matter import is_front_matter
 
 
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
@@ -169,7 +170,28 @@ class MetadataCollector:
         if not article.get("DOI"):
             return False
 
+        # Mastheads, reports, calls for papers, issue-level DOIs (shared rule set)
+        if is_front_matter(" ".join(article.get("title", [""])), article.get("DOI")):
+            return False
+
         return True
+
+    @staticmethod
+    def citation_year(article: Dict) -> Optional[int]:
+        """Print (issue) year when published in an issue, else CrossRef's issued year.
+
+        CrossRef's `issued` is the earliest date, i.e. the online-first date, which is
+        not the year a paper is cited with once it appears in an issue.
+        """
+        for date in (
+            article.get("published-print"),
+            (article.get("journal-issue") or {}).get("published-print"),
+            article.get("issued"),
+        ):
+            parts = (date or {}).get("date-parts") or [[None]]
+            if parts[0] and parts[0][0]:
+                return int(parts[0][0])
+        return None
 
     def fetch_articles_by_issn(self, year: int, issn: str) -> List[Dict]:
         """
@@ -257,7 +279,7 @@ class MetadataCollector:
             raw_title = " ".join(article.get("title", ["No Title Available"]))
             title = self.clean_title(raw_title)
 
-            year = article.get("issued", {}).get("date-parts", [[None]])[0][0]
+            year = self.citation_year(article)
 
             if not year:
                 continue

@@ -527,6 +527,19 @@ cite-hustle sample --limit 20
 
 ---
 
+### `cleanup-non-articles`
+
+Remove front matter (mastheads, reports, calls for papers, issue-level DOIs). Dry run by
+default; `--apply` backs up the DB to `--backup-dir` (default `.db-backups/`) first.
+Records with a PDF or wiki page are listed, never deleted.
+
+```bash
+cite-hustle cleanup-non-articles
+cite-hustle cleanup-non-articles --apply
+```
+
+---
+
 ### `rebuild-fts`
 
 Rebuild full-text search indexes.

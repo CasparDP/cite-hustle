@@ -1170,6 +1170,60 @@ def search(ctx, query, limit, author):
         click.echo()
 
 
+@main.command("cleanup-non-articles")
+@click.option("--apply", is_flag=True, help="Delete the records (default: dry run)")
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".db-backups"),
+    show_default=True,
+    help="Where the pre-delete DB copy goes",
+)
+@click.pass_context
+def cleanup_non_articles(ctx, apply, backup_dir):
+    """
+    Remove front matter (mastheads, reports, calls for papers, issue-level DOIs).
+
+    Uses the same rule set as the collector filter (front_matter.py). Records with
+    a PDF or wiki page are listed for review and never deleted.
+    """
+    import shutil
+    from datetime import datetime
+
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+    df = repo.get_front_matter_candidates()
+    protected = df[df["has_pdf"] | df["has_wiki"]]
+    deletable = df[~(df["has_pdf"] | df["has_wiki"])]
+
+    click.echo(f"Front-matter records: {len(df):,} ({len(deletable):,} deletable)")
+    titles = deletable["title"].fillna("").str.strip().str.lower().str[:60].value_counts()
+    for title, n in titles.head(30).items():
+        click.echo(f"  {n:5,}  {title or '(empty title)'}")
+    if len(titles) > 30:
+        click.echo(f"  ... and {len(titles) - 30} more distinct titles")
+    for row in protected.itertuples():
+        click.echo(f"  kept (has PDF/wiki, review by hand): {row.doi}  {row.title}")
+
+    if not apply:
+        click.echo("\nDry run: nothing deleted. Re-run with --apply.")
+        return
+    if deletable.empty:
+        return
+
+    db.conn.execute("CHECKPOINT")
+    db_file = Path(db.db_path)  # the file this connection opened
+    backup = backup_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_file, backup / db_file.name)
+    click.echo(f"\nBackup: {backup / db_file.name}")
+
+    counts = repo.delete_articles(list(deletable["doi"]))
+    click.echo("Deleted: " + ", ".join(f"{k} {v:,}" for k, v in counts.items()))
+    db.create_fts_indexes()
+    click.echo("✓ FTS indexes rebuilt")
+
+
 @main.command(name="rebuild-fts")
 @click.pass_context
 def rebuild_fts(ctx):
