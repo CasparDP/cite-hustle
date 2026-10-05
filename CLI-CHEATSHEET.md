@@ -60,17 +60,22 @@ cite-hustle status
 
 ### `dashboard`
 
-Show a dashboard-style overview of database contents.
+Show a dashboard-style overview of database contents, and write a self-contained
+HTML dashboard (charts per year, coverage, journal drill-down, suspected non-articles,
+unusual year-over-year changes). `make dashboard` runs it with `--open`.
 
 ```bash
-cite-hustle dashboard
-cite-hustle dashboard --top-journals 5 --recent 5
+cite-hustle dashboard                       # also writes reports/dashboard.html
+cite-hustle dashboard --open                # open it (Safari on macOS)
+cite-hustle dashboard --no-html --top-journals 5 --recent 5
 ```
 
 **Options:**
 
 - `--top-journals <n>` - Number of top journals to show
 - `--recent <n>` - Recent processing entries to show
+- `--html/--no-html` - Write the HTML dashboard (default on); `--out <path>` overrides
+  `reports/dashboard.html`
 
 **When to use:** Quick snapshot of coverage, gaps, and recent activity
 

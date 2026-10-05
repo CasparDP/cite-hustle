@@ -870,6 +870,85 @@ class ArticleRepository:
 
         return [dict(zip(["journal_name", "count"], row)) for row in result]
 
+    # Records that look like front matter rather than research articles: untitled
+    # issue-level DOIs, or a title repeated >= 3 times in one journal (mastheads,
+    # "Forthcoming Papers", "Report of Independent Auditor", ...). Needs alias `a`.
+    _SUSPECTED_NON_ARTICLE = r"""(
+        lower(a.title) = 'no title available'
+        OR regexp_matches(a.doi, '\.issue-[0-9a-z]+$|\.v[0-9]+\.[0-9]+$|ahead-of-print$')
+        OR COUNT(*) OVER (
+            PARTITION BY a.journal_issn, regexp_replace(lower(a.title), '[^a-z0-9]', '', 'g')
+        ) >= 3
+    )"""
+
+    def get_dashboard_data(self, recent_per_journal: int = 25) -> Dict[str, List[Dict]]:
+        """Everything the HTML dashboard needs, as JSON-ready lists of dicts."""
+        base = f"""
+            WITH a AS (SELECT a.*, {self._SUSPECTED_NON_ARTICLE} AS suspect FROM articles a)
+            SELECT a.*,
+                   (s.abstract IS NOT NULL AND s.abstract <> '') AS has_abstract,
+                   NOT {self._SSRN_NOT_SEARCHED} AS ssrn_searched,
+                   s.ssrn_url IS NOT NULL AS ssrn_found,
+                   p.doi IS NOT NULL AS has_pdf, p.source AS pdf_source, p.verify_status,
+                   w.status AS wiki_status
+            FROM a
+            LEFT JOIN ssrn_pages s ON a.doi = s.doi
+            LEFT JOIN pdf_files p ON a.doi = p.doi
+            LEFT JOIN wiki_pages w ON a.doi = w.doi
+        """
+
+        def records(query: str, params=None) -> List[Dict]:
+            df = self.conn.execute(query, params or []).fetchdf()
+            for col in df.select_dtypes(include=["datetime", "datetimetz"]).columns:
+                df[col] = df[col].astype(str)
+            return df.astype(object).where(df.notna(), None).to_dict("records")
+
+        return {
+            "journal_years": records(
+                f"""
+                SELECT journal_issn, any_value(journal_name) AS journal_name, year,
+                       COUNT(*) AS n,
+                       COUNT(*) FILTER (WHERE has_abstract) AS n_abstract,
+                       COUNT(*) FILTER (WHERE ssrn_searched) AS n_ssrn_searched,
+                       COUNT(*) FILTER (WHERE ssrn_found) AS n_ssrn_found,
+                       COUNT(*) FILTER (WHERE has_pdf) AS n_pdf,
+                       COUNT(*) FILTER (WHERE verify_status = 'match') AS n_verified,
+                       COUNT(*) FILTER (WHERE wiki_status = 'ingested') AS n_wiki,
+                       COUNT(*) FILTER (WHERE suspect) AS n_suspect
+                FROM ({base}) GROUP BY journal_issn, year ORDER BY journal_issn, year
+            """
+            ),
+            "recent_articles": records(
+                f"""
+                SELECT journal_issn, doi, title, authors, year, has_abstract, ssrn_found,
+                       pdf_source, verify_status, wiki_status, suspect
+                FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY journal_issn, suspect ORDER BY year DESC, created_at DESC
+                    ) AS rn
+                    FROM ({base})
+                )
+                WHERE rn <= ?
+                ORDER BY journal_issn, year DESC
+            """,
+                [recent_per_journal],
+            ),
+            "activity": records(
+                """
+                SELECT CAST(processed_at AS DATE) AS day, stage, status, COUNT(*) AS n
+                FROM processing_log
+                WHERE processed_at >= current_date - INTERVAL 30 DAY
+                GROUP BY 1, 2, 3 ORDER BY 1 DESC, 4 DESC
+            """
+            ),
+            "pdf_sources": records(
+                """
+                SELECT source, verify_status, COUNT(*) AS n
+                FROM pdf_files GROUP BY 1, 2 ORDER BY 3 DESC
+            """
+            ),
+        }
+
     def get_recent_processing(self, limit: int = 10) -> List[Dict]:
         """Get most recent processing log entries."""
         result = self.conn.execute(

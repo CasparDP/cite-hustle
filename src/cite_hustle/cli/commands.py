@@ -982,10 +982,32 @@ def import_pdfgrabba(ctx, manifest_path, dry_run, limit):
 @click.option("--recent", default=10, type=int, help="Recent processing entries to show")
 @click.option("--missing-by-journal", default=0, type=int, help="Show missing-abstracts bar chart")
 @click.option("--bar-width", default=30, type=int, help="Width of missing-abstracts bars")
+@click.option(
+    "--html/--no-html",
+    default=True,
+    help="Also write the self-contained HTML dashboard (default: reports/dashboard.html)",
+)
+@click.option("--out", "out_path", type=click.Path(path_type=Path), help="HTML output path")
+@click.option("--open", "open_html", is_flag=True, help="Open the HTML dashboard afterwards")
 @click.pass_context
-def dashboard(ctx, top_journals, recent, missing_by_journal, bar_width):
+def dashboard(ctx, top_journals, recent, missing_by_journal, bar_width, html, out_path, open_html):
     """Show a dashboard-style overview of database contents."""
     repo = ctx.obj["repo"]
+    if html:
+        from cite_hustle.dashboard_html import write_dashboard
+
+        out_path = write_dashboard(
+            repo, settings.db_path, out_path or settings.reports_dir / "dashboard.html"
+        )
+        click.echo(f"📊 HTML dashboard: {out_path}")
+        if open_html:
+            import subprocess
+            import webbrowser
+
+            if sys.platform == "darwin":
+                subprocess.run(["open", "-a", "Safari", str(out_path)], check=False)
+            else:
+                webbrowser.open(out_path.resolve().as_uri())
     stats = repo.get_statistics()
     missing_abstracts = repo.get_missing_abstract_count()
     openalex_enriched = repo.get_openalex_enriched_count()

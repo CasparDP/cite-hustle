@@ -24,8 +24,9 @@ endif
 status:
 	$(RUN) status
 
+# Terminal summary + self-contained HTML (reports/dashboard.html), opened in the browser
 dashboard:
-	$(RUN) dashboard
+	$(RUN) dashboard --open
 
 journals:
 	$(RUN) journals
