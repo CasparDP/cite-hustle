@@ -1224,6 +1224,167 @@ def cleanup_non_articles(ctx, apply, backup_dir):
     click.echo("✓ FTS indexes rebuilt")
 
 
+@main.command("merge-duplicates")
+@click.option("--apply", is_flag=True, help="Merge the duplicates (default: dry run)")
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".db-backups"),
+    show_default=True,
+    help="Where the pre-merge DB copy goes",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CrossRef response cache with page numbers (default: settings cache dir)",
+)
+@click.option(
+    "--report",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CSV of every proposed merge and held pair (default: reports dir)",
+)
+@click.pass_context
+def merge_duplicates(ctx, apply, backup_dir, cache_dir, report):
+    """
+    Merge papers stored under two DOIs onto one DOI (rule in duplicates.py).
+
+    Same journal and title, compatible authors, years at most one apart, and the same
+    CrossRef start page. JSTOR DOIs never win. Pairs without page data are listed, not
+    merged. Run after refresh-metadata, so the CrossRef cache is complete.
+    """
+    import shutil
+    from datetime import datetime
+
+    import pandas as pd
+
+    from cite_hustle import duplicates as dup
+
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+    articles = repo.get_articles_for_dedup()
+    records = [
+        dup.Record(
+            r.doi, r.title, r.authors, None if pd.isna(r.year) else int(r.year), r.journal_issn
+        )
+        for r in articles.itertuples()
+    ]
+    candidates = dup.same_title_groups(records)
+    crossref = dup.load_crossref_pages(
+        cache_dir or settings.cache_dir, [r.doi for g in candidates for r in g]
+    )
+    for group in candidates:
+        for r in group:
+            r.page, r.cites = crossref.get(r.doi.lower(), (None, 0))
+    current = dup.current_prefixes(records)
+    scan = dup.find_duplicates(candidates, current)
+    # DOIs CrossRef has turned into aliases are no longer listed, so they have no page:
+    # ask CrossRef about those (answers cached for the next run)
+    aliases = dup.resolve_aliases(
+        dup.dois_to_check_for_alias(scan, crossref),
+        cache_dir or settings.cache_dir,
+        mailto=settings.crossref_email,
+        log=click.echo,
+    )
+    if any(aliases.values()):
+        for group in candidates:
+            for r in group:
+                r.alias_of = aliases.get(r.doi.lower()) or None
+                if r.alias_of and r.page is None:  # the target's record is the work itself
+                    r.page = crossref.get(r.alias_of, (None, 0))[0]
+        scan = dup.find_duplicates(candidates, current)
+    by_doi = {r.doi: r for g in candidates for r in g}
+
+    n_drop = sum(len(g.drop) for g in scan.groups)
+    click.echo(
+        f"Same-title groups: {len(candidates):,}; merge groups: {len(scan.groups):,} "
+        f"({n_drop:,} articles to remove); held without page data: "
+        f"{len(scan.held_no_pages):,} pairs; conflicting clusters skipped: {len(scan.conflicted)}; "
+        f"CrossRef aliases among checked DOIs: {sum(bool(v) for v in aliases.values()):,}"
+    )
+
+    def row(action, x, y):
+        return [
+            action,
+            x.doi,
+            y.doi,
+            x.year,
+            y.year,
+            x.page,
+            y.page,
+            x.cites,
+            y.cites,
+            y.alias_of or "",
+            x.authors,
+            y.authors,
+            x.title,
+        ]
+
+    rows = [row("merge", by_doi[g.keep], by_doi[d]) for g in scan.groups for d in g.drop]
+    rows += [row("held", by_doi[a], by_doi[b]) for a, b in scan.held_no_pages]
+    rows += [row("conflict", by_doi[m[0]], by_doi[d]) for m in scan.conflicted for d in m[1:]]
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "action",
+            "keep",
+            "drop",
+            "year_keep",
+            "year_drop",
+            "page_keep",
+            "page_drop",
+            "cites_keep",
+            "cites_drop",
+            "drop_alias_of",
+            "authors_keep",
+            "authors_drop",
+            "title",
+        ],
+    )
+    report = report or settings.reports_dir / f"merge-duplicates-{datetime.now():%Y%m%d-%H%M%S}.csv"
+    df.to_csv(report, index=False)
+    click.echo(f"Full list: {report}")
+
+    merges = df[df.action == "merge"]
+    combos = merges["keep"].str.split("/").str[0] + " < " + merges["drop"].str.split("/").str[0]
+    for combo, n in combos.value_counts().head(20).items():
+        click.echo(f"  {n:5,}  {combo}")
+    for row in df[df.action != "merge"].itertuples():
+        click.echo(f"  {row.action}: {row.keep} / {row.drop}  {str(row.title)[:60]}")
+
+    dup_keys = repo.find_duplicate_keys()
+    for table, keys in dup_keys.items():
+        for k in keys:
+            kind = "identical rows" if k["n_distinct"] == 1 else "DIFFERENT rows"
+            click.echo(f"  duplicate key in {table}: {k} ({kind})")
+
+    if not apply:
+        click.echo("\nDry run: nothing merged. Re-run with --apply.")
+        return
+    if any(k["n_distinct"] != 1 for keys in dup_keys.values() for k in keys):
+        raise click.ClickException("Duplicate primary keys with differing rows; fix by hand first.")
+    if not scan.groups:
+        return
+
+    db.conn.execute("CHECKPOINT")
+    db_file = Path(db.db_path)  # the file this connection opened
+    backup = backup_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_file, backup / db_file.name)
+    click.echo(f"\nBackup: {backup / db_file.name}")
+
+    if dup_keys:
+        click.echo(f"Repaired duplicate keys: {repo.repair_identical_duplicate_rows()}")
+    counts = repo.merge_duplicate_articles([(g.keep, g.drop) for g in scan.groups])
+    skipped = counts.pop("skipped_wiki")
+    click.echo("Merged: " + ", ".join(f"{k} {v:,}" for k, v in counts.items()))
+    for keep in skipped:
+        click.echo(f"  skipped (dropped DOI has a wiki page, review by hand): {keep}")
+    db.create_fts_indexes()
+    click.echo("✓ FTS indexes rebuilt")
+
+
 @main.command(name="rebuild-fts")
 @click.pass_context
 def rebuild_fts(ctx):

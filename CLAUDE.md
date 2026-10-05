@@ -36,6 +36,7 @@ cite-hustle/
 │   ├── config.py              # Settings (pydantic-settings), env vars CITE_HUSTLE_*
 │   ├── matching.py            # Shared fuzzy title/author matching helpers
 │   ├── front_matter.py        # Front-matter rule set (collector filter, cleanup, dashboard)
+│   ├── duplicates.py          # Duplicate-DOI rule (merge-duplicates): pages, authors, CrossRef aliases
 │   ├── dashboard_html.py      # Self-contained HTML dashboard (reports/dashboard.html)
 │   ├── paths.py               # Portable $HOME/... path conversion for DB-stored paths
 │   ├── acquire.py             # Ordered fallback/institutional acquisition orchestration
@@ -415,6 +416,25 @@ make cleanup-non-articles         # dry run
 make cleanup-non-articles-apply
 ```
 
+### Merge papers stored under two DOIs (`merge-duplicates`)
+
+Rule in `duplicates.py`: same ISSN and normalized title, compatible authors (typo-tolerant),
+years at most one apart, and the same CrossRef start page from the cache (±2 across DOI
+prefixes). Within one prefix, comments/replies/discussions/errata never merge. DOIs missing
+from the cache are checked against CrossRef (one GET per DOI, redirects not followed, 2/s):
+a 301 to the partner DOI, or of both to the same DOI, proves the duplicate; chains are
+followed, and an alias takes its target's page. Answers are cached in
+`cache/crossref_aliases.json`. Kept DOI: the alias target, never JSTOR, then the journal's
+current prefix, then CrossRef citations. Child rows move to the kept DOI (best
+`ssrn_pages`/`pdf_files` row wins, a missing abstract is filled); groups whose dropped DOI
+has a wiki page are skipped. Dry run writes the full list to `reports/`; `--apply` backs up
+first and repairs identical duplicate-key rows. Run after `refresh-metadata`. Runner only.
+
+```bash
+make merge-duplicates             # dry run (makes the CrossRef alias lookups)
+make merge-duplicates-apply
+```
+
 ### Cleanup Bad SSRN HTML (`scripts/cleanup_bad_ssrn_html.py`)
 
 Removes Cloudflare "are you human" HTML artifacts (~20,800 bytes) and resets those DOIs for re-scraping.
@@ -456,4 +476,4 @@ poetry run python extract_abstracts_from_html.py
 - **Abstract sources** (2026-10): CrossRef (collect + cache backfill), OpenAlex (optional free key), Semantic Scholar (DOI-exact batch), NBER landing pages (near-exact title plus shared author surname, because abstracts get no downstream verification). Extracting abstracts from PDFs was deferred: every verified PDF already had one. Enrichment rows must not hide an article from the SSRN queue; 1,234 articles had been skipped this way before the fix.
 - **`articles.year` is the citation (print) year** (2026-10): `published-print`, else the issue's print date, else CrossRef's `issued` (online-first) date. Re-collecting updates the year (`ON CONFLICT ... year = EXCLUDED.year`). CrossRef's date filter matches the earliest date, so a paper is found under its online year: `make update` covers three years, and `make refresh-metadata` re-fetches everything. `idx_articles_year` was dropped because DuckDB rejected year updates on referenced rows.
 - **Front matter is filtered and removed** (2026-10): one anchored whole-title rule set in `front_matter.py` (plus issue-level DOIs) drives the collector filter, `cleanup-non-articles`, and the dashboard. "Discussion", "Comment", "Reply", "Dialogue", "Correspondence", "Introduction" are kept. The earlier "title repeated >= 3 times" heuristic was rejected: it also matched real papers stored under several DOIs.
-- **Known duplicates, not yet removed** (2026-10): about 2,280 papers exist under two DOIs, mostly a JSTOR `10.2307/` DOI beside the publisher DOI (Journal of Finance 1,440), plus old/new AMR DOI formats and Elsevier/SAGE DOIs for Journal of Management.
+- **Duplicate DOIs are merged, not deleted blindly** (2026-10): papers under two DOIs (JSTOR beside the publisher DOI for Journal of Finance; old/new DOI formats for AMR, AEA, Econometrica, JoM; Elsevier beside SAGE for JoM; MIT beside OUP for QJE) are merged by `merge-duplicates`. Start pages separate a paper from its corrigendum or the authors' reply, which share title and authors. CrossRef moved DOI ownership with the journals, so "publisher DOI" means the journal's current prefix, not the prefix's registrant. CrossRef itself has made many JSTOR (JF) and Elsevier (JoM) DOIs aliases of the publisher DOI (301) and no longer lists them; those pairs are proven by the redirect. Pairs without page data or alias proof are listed, never merged. Snapshot test (pre-refresh copy, after front-matter cleanup, partly refreshed cache): 2,141 groups merged, 2,162 articles removed, none with a PDF or wiki page, 6,418 `processing_log` rows re-pointed, 579 CrossRef aliases, no new orphans, 9 s. CrossRef changes aliases over time (a JEL DOI that was primary in the morning redirected by the afternoon), so chains are followed.

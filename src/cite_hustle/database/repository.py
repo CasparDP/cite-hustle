@@ -995,6 +995,195 @@ class ArticleRepository:
         finally:
             self.conn.execute("DROP TABLE IF EXISTS _delete_dois")
 
+    def get_articles_for_dedup(self) -> pd.DataFrame:
+        """Fields the duplicate-DOI rule needs, for every article."""
+        return self.conn.execute(
+            "SELECT doi, title, authors, year, journal_issn FROM articles"
+        ).fetchdf()
+
+    # Tables whose primary key involves the DOI; an inconsistent ART index once let
+    # ssrn_pages hold two identical rows for one DOI
+    _KEYED_TABLES = {
+        "articles": "doi",
+        "ssrn_pages": "doi",
+        "pdf_files": "doi",
+        "wiki_pages": "doi",
+        "pdf_candidates": "doi, source",
+    }
+
+    def find_duplicate_keys(self) -> Dict[str, List[Dict]]:
+        """Primary keys held by more than one row, per table, with an identical-rows flag."""
+        out = {}
+        for table, key in self._KEYED_TABLES.items():
+            # COUNT(DISTINCT t) counts distinct whole rows (t is the row as a struct)
+            rows = self.conn.execute(
+                f"""
+                SELECT {key}, COUNT(*) AS n_rows, COUNT(DISTINCT t) AS n_distinct
+                FROM {table} t GROUP BY {key} HAVING COUNT(*) > 1
+            """
+            ).fetchdf()
+            if not rows.empty:
+                out[table] = rows.to_dict("records")
+        return out
+
+    def repair_identical_duplicate_rows(self) -> int:
+        """Collapse primary-key duplicates whose rows are identical into one row.
+
+        Rows that differ are left alone (callers must refuse to proceed). Returns the
+        number of keys repaired.
+        """
+        repaired = 0
+        for table, dups in self.find_duplicate_keys().items():
+            cols = [k.strip() for k in self._KEYED_TABLES[table].split(",")]
+            for dup in dups:
+                if dup["n_distinct"] != 1:
+                    continue
+                where = " AND ".join(f"{c} = ?" for c in cols)
+                params = [dup[c] for c in cols]
+                # Separate statements: inside one transaction the delete and re-insert of
+                # the corrupted key fail with a write-write conflict. The row waits in a
+                # temp table in between (and is in the caller's backup).
+                self.conn.execute(
+                    f"CREATE OR REPLACE TEMP TABLE _one_row AS "
+                    f"SELECT DISTINCT * FROM {table} WHERE {where}",
+                    params,
+                )
+                self.conn.execute(f"DELETE FROM {table} WHERE {where}", params)
+                self.conn.execute(f"INSERT INTO {table} SELECT * FROM _one_row")
+                self.conn.execute("DROP TABLE _one_row")
+                repaired += 1
+        return repaired
+
+    def merge_duplicate_articles(self, groups: List[tuple]) -> Dict:
+        """Merge each (keep_doi, [drop_dois]) group onto keep_doi, then delete the drops.
+
+        Per keep DOI, the best ssrn_pages row (SSRN URL > downloaded PDF > abstract >
+        searched > newest) and the best pdf_files row (match > uncertain > pending > other)
+        win, with a missing abstract filled from another member; pdf_candidates keep the
+        kept DOI's row per source; processing_log rows are re-pointed. Groups where a
+        dropped DOI has a wiki page are skipped (the page's front matter names the DOI).
+
+        Child rows change in one transaction; the articles are deleted in a second one,
+        because DuckDB checks foreign keys against the transaction's starting state.
+        """
+        if not groups:
+            return {"groups": 0, "skipped_wiki": []}
+        c = self.conn
+        c.execute("CREATE OR REPLACE TEMP TABLE _merge_map (doi VARCHAR PRIMARY KEY, keep VARCHAR)")
+        try:
+            rows = [[keep, keep] for keep, _ in groups]
+            rows += [[d, keep] for keep, drops in groups for d in drops]
+            c.executemany("INSERT INTO _merge_map VALUES (?, ?)", rows)
+            skipped = [
+                r[0]
+                for r in c.execute(
+                    """
+                    SELECT DISTINCT m.keep FROM _merge_map m JOIN wiki_pages w ON w.doi = m.doi
+                    WHERE m.doi <> m.keep ORDER BY 1
+                """
+                ).fetchall()
+            ]
+            c.execute(
+                """
+                DELETE FROM _merge_map WHERE keep IN (
+                    SELECT m.keep FROM _merge_map m JOIN wiki_pages w ON w.doi = m.doi
+                    WHERE m.doi <> m.keep)
+            """
+            )
+            # Winning child rows, re-keyed to the kept DOI (src_doi records where they came from)
+            c.execute(
+                """
+                CREATE OR REPLACE TEMP TABLE _new_ssrn AS
+                WITH ranked AS (
+                    SELECT m.keep, s.*,
+                        row_number() OVER w AS rn,
+                        first_value(nullif(s.abstract, '') IGNORE NULLS) OVER (
+                            w ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                        ) AS best_abstract
+                    FROM _merge_map m JOIN ssrn_pages s ON s.doi = m.doi
+                    WINDOW w AS (PARTITION BY m.keep ORDER BY
+                        (s.ssrn_url IS NOT NULL) DESC,
+                        coalesce(s.pdf_downloaded, false) DESC,
+                        (coalesce(s.abstract, '') <> '') DESC,
+                        (s.html_file_path IS NOT NULL OR s.error_message IS NOT NULL) DESC,
+                        s.scraped_at DESC NULLS LAST,
+                        (s.doi = m.keep) DESC)
+                )
+                SELECT * EXCLUDE (keep, rn, best_abstract)
+                       REPLACE (keep AS doi, coalesce(nullif(abstract, ''), best_abstract) AS abstract),
+                       doi AS src_doi,
+                       coalesce(nullif(abstract, ''), '') = '' AND best_abstract IS NOT NULL
+                           AS abstract_filled
+                FROM ranked WHERE rn = 1
+            """
+            )
+            c.execute(
+                """
+                CREATE OR REPLACE TEMP TABLE _new_pdf AS
+                SELECT * EXCLUDE (keep, rn) REPLACE (keep AS doi), doi AS src_doi FROM (
+                    SELECT m.keep, p.*, row_number() OVER (PARTITION BY m.keep ORDER BY
+                        CASE p.verify_status WHEN 'match' THEN 0 WHEN 'uncertain' THEN 1
+                                             WHEN 'pending' THEN 2 ELSE 3 END,
+                        (p.doi = m.keep) DESC, p.downloaded_at DESC NULLS LAST) AS rn
+                    FROM _merge_map m JOIN pdf_files p ON p.doi = m.doi
+                ) WHERE rn = 1
+            """
+            )
+            c.execute(
+                """
+                CREATE OR REPLACE TEMP TABLE _new_cand AS
+                SELECT * EXCLUDE (keep, rn) REPLACE (keep AS doi), doi AS src_doi FROM (
+                    SELECT m.keep, k.*, row_number() OVER (PARTITION BY m.keep, k.source ORDER BY
+                        (k.doi = m.keep) DESC, k.checked_at DESC NULLS LAST) AS rn
+                    FROM _merge_map m JOIN pdf_candidates k ON k.doi = m.doi
+                ) WHERE rn = 1
+            """
+            )
+
+            def moved(table):
+                return c.execute(f"SELECT COUNT(*) FROM {table} WHERE src_doi <> doi").fetchone()[0]
+
+            counts = {
+                "groups": c.execute("SELECT COUNT(DISTINCT keep) FROM _merge_map").fetchone()[0],
+                "ssrn_rows_taken_from_dropped": moved("_new_ssrn"),
+                "abstracts_filled": c.execute(
+                    "SELECT COUNT(*) FROM _new_ssrn WHERE abstract_filled"
+                ).fetchone()[0],
+                "pdf_files_moved": moved("_new_pdf"),
+                "pdf_candidates_moved": moved("_new_cand"),
+            }
+            c.execute("BEGIN")
+            try:
+                for table, new in [
+                    ("ssrn_pages", "_new_ssrn"),
+                    ("pdf_files", "_new_pdf"),
+                    ("pdf_candidates", "_new_cand"),
+                ]:
+                    c.execute(f"DELETE FROM {table} WHERE doi IN (SELECT doi FROM _merge_map)")
+                    c.execute(
+                        f"INSERT INTO {table} BY NAME "
+                        f"SELECT * EXCLUDE (src_doi{', abstract_filled' if table == 'ssrn_pages' else ''}) FROM {new}"
+                    )
+                counts["processing_log_repointed"] = c.execute(
+                    """
+                    UPDATE processing_log SET doi = m.keep FROM _merge_map m
+                    WHERE processing_log.doi = m.doi AND m.doi <> m.keep
+                """
+                ).fetchone()[0]
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+            # Must follow the children's commit; a single statement, so atomic on its own
+            counts["articles_deleted"] = c.execute(
+                "DELETE FROM articles WHERE doi IN (SELECT doi FROM _merge_map WHERE doi <> keep)"
+            ).fetchone()[0]
+            counts["skipped_wiki"] = skipped
+            return counts
+        finally:
+            for t in ("_merge_map", "_new_ssrn", "_new_pdf", "_new_cand"):
+                c.execute(f"DROP TABLE IF EXISTS {t}")
+
     def get_recent_processing(self, limit: int = 10) -> List[Dict]:
         """Get most recent processing log entries."""
         result = self.conn.execute(

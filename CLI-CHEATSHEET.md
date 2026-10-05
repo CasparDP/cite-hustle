@@ -540,6 +540,21 @@ cite-hustle cleanup-non-articles --apply
 
 ---
 
+### `merge-duplicates`
+
+Merge papers stored under two DOIs onto one DOI (rule in `duplicates.py`). Dry run by
+default and writes every proposed merge and held pair to a CSV in `reports/` (`--report`
+overrides). Needs the CrossRef cache (`--cache-dir`), so run after `refresh-metadata`;
+DOIs missing from it are checked against CrossRef for aliases. `--apply` backs up the DB
+to `--backup-dir` first.
+
+```bash
+cite-hustle merge-duplicates
+cite-hustle merge-duplicates --apply
+```
+
+---
+
 ### `rebuild-fts`
 
 Rebuild full-text search indexes.

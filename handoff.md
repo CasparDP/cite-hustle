@@ -1,6 +1,6 @@
 # cite-hustle session handoff
 
-Updated: 2026-10-05 (print years, front-matter cleanup, HTML dashboard)
+Updated: 2026-10-05 (duplicate-DOI merge; print years, front-matter cleanup, HTML dashboard)
 
 ## Current state
 
@@ -41,8 +41,21 @@ Updated: 2026-10-05 (print years, front-matter cleanup, HTML dashboard)
   records (3 with PDFs kept), no orphans, backup written, 5.7 s.
 - Run order on the VM: `git pull`, `make refresh-metadata` (1980 to now, about 2,000
   CrossRef requests), `make cleanup-non-articles` (dry run), `make cleanup-non-articles-apply`.
-- Not done, needs sign-off: about 2,280 papers stored under two DOIs (mostly JSTOR
-  `10.2307/` beside the publisher DOI; Journal of Finance 1,440).
+- **Duplicate DOIs: `merge-duplicates` is implemented, not yet run on the VM.** Rule
+  signed off 2026-10-05, plus the CrossRef alias check (see the CLAUDE.md decision).
+  Applied to a snapshot copy: 2,141 groups merged, 2,162 articles removed, none with a PDF
+  or wiki page, 6,418 `processing_log` rows re-pointed, no new orphans, 9 s; 19 pairs held
+  (no page data: JAR `joar.*`, AMR `amr.10.*`, CAR early-view), 0 conflicts. CrossRef has turned many JF JSTOR
+  and JoM Elsevier DOIs into aliases (301 to the publisher DOI), so the refreshed cache no
+  longer lists them; the command asks CrossRef about DOIs missing from the cache (a few
+  hundred to ~1,200 requests at 2/s, cached in `cache/crossref_aliases.json`; the snapshot
+  run needed 579, with 429 backoffs taking about 15 minutes).
+- Live `ssrn_pages` holds two identical rows for `10.1016/j.jcorpfin.2023.102427` (an ART
+  index inconsistency); `merge-duplicates --apply` repairs identical duplicate-key rows
+  after the backup and refuses if duplicate keys hold differing rows.
+- Run order on the VM after `refresh-metadata` has finished and cleanup is applied:
+  `make merge-duplicates` (dry run; review the CSV it writes to `reports/`), then
+  `make merge-duplicates-apply`, then `make dashboard`.
 - HTML dashboard: `make dashboard` writes `reports/dashboard.html`.
 
 ## Not yet verified

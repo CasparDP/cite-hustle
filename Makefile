@@ -121,7 +121,8 @@ pipeline-monthly:
 # make update YEAR=2024 → same for a specific year
 # make update-full      → collect + scrape + enrich (includes Selenium SSRN scrape)
 
-.PHONY: update update-full refresh-metadata cleanup-non-articles cleanup-non-articles-apply
+.PHONY: update update-full refresh-metadata cleanup-non-articles cleanup-non-articles-apply \
+        merge-duplicates merge-duplicates-apply
 
 # Three years: a paper is found under its online-first year (CrossRef's date filter) and
 # moves to its print year once in an issue; online-to-print lags reach two years (JFQA)
@@ -139,6 +140,14 @@ cleanup-non-articles:
 
 cleanup-non-articles-apply:
 	$(RUN) cleanup-non-articles --apply --backup-dir $(CURDIR)/.db-backups
+
+# Papers under two DOIs (JSTOR + publisher, old/new formats): dry run, then apply.
+# Run after refresh-metadata: the rule reads start pages from the CrossRef cache.
+merge-duplicates:
+	$(RUN) merge-duplicates
+
+merge-duplicates-apply:
+	$(RUN) merge-duplicates --apply --backup-dir $(CURDIR)/.db-backups
 
 update-full:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force
