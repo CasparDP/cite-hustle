@@ -49,7 +49,7 @@ else
   fail "no database under '$base' (Dropbox not synced, or set CITE_HUSTLE_DROPBOX_BASE)"
 fi
 compgen -G "$base/DB/*conflicted copy*" >/dev/null && fail "Dropbox conflicted copy of the DB exists"
-[[ -f "$base/DB/articles.duckdb.wal" ]] && warn "leftover articles.duckdb.wal (another writer or a crash)"
+[[ -f "$base/DB/articles.duckdb.wal" ]] && warn "leftover articles.duckdb.wal (crashed run: make recover-db)"
 pgrep -if dropbox >/dev/null && ok "Dropbox running" || warn "Dropbox not running"
 
 # API identities and keys

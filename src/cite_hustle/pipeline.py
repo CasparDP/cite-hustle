@@ -71,8 +71,8 @@ def preflight_guards(db_path: Path) -> None:
             f"Write-ahead log present: {wal}\n"
             "Either another machine is mid-write (wait for Dropbox to settle) or "
             "a previous writer crashed. If you are sure no other machine is "
-            "writing, run 'poetry run cite-hustle status' once on the machine "
-            "that crashed to let DuckDB recover, then retry."
+            "writing, run 'make recover-db' on the machine that crashed to "
+            "merge the WAL (it backs up first), then retry."
         )
 
 

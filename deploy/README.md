@@ -42,6 +42,8 @@ as a system service.
    make pdfs                          # slow SSRN batch + free fallbacks (visible browser)
    make process                       # verify PDFs, wiki ingestion, indexes
    ```
+   Stop runs with Ctrl+C (or run them in `tmux` started from the desktop terminal);
+   closing the window kills the process and leaves a WAL for `make recover-db`.
    Pace SSRN with `BATCH`, `SCRAPE_DELAY`, `DOWNLOAD_DELAY`. `scrape` exits non-zero
    on a suspected Cloudflare block, which stops `make pdfs` before the download step;
    wait (hours) before retrying.
@@ -136,8 +138,10 @@ The pipeline refuses to start when it detects:
 - a Dropbox *conflicted copy* of the database (single-writer violation), or
 - a leftover `articles.duckdb.wal` (crashed writer or another machine
   mid-write). If no other machine is writing, run
-  `poetry run cite-hustle status` once on the machine that crashed so DuckDB
-  recovers the WAL, then retry.
+  `make recover-db` on the machine that crashed: it backs up the DB and WAL to
+  `.db-backups/` in the repo (or `BACKUP_DIR`), merges the WAL with a read-write
+  checkpoint, and keeps the newest 3 backups. Read-only commands such as `status`
+  see the WAL's data but never merge it.
 
 A concurrent second pipeline run is blocked by a local lockfile at
 `~/.cache/cite-hustle/pipeline.lock`.

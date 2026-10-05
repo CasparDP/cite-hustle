@@ -32,7 +32,7 @@ journals:
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
-.PHONY: init rebuild-fts doctor smoke-ssrn
+.PHONY: init rebuild-fts doctor smoke-ssrn recover-db
 
 init:
 	$(RUN) init
@@ -40,6 +40,10 @@ init:
 # Read-only readiness check (env, Chrome, display, Dropbox, keys, process-paper)
 doctor:
 	@bash deploy/doctor.sh
+
+# After a killed run: back up DB + WAL (to .db-backups/ or BACKUP_DIR), then merge the WAL
+recover-db:
+	@bash deploy/recover_db.sh
 
 # Cloudflare smoke test against a throwaway DB (never touches the real one):
 # collects current-year accounting papers, then scrapes + downloads a few, visibly.

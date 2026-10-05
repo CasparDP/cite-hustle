@@ -89,3 +89,6 @@ AI blob
 
 # SeleniumBase runtime artifacts
 downloaded_files/
+
+# make recover-db backups
+.db-backups/
