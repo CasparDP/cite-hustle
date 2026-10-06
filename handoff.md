@@ -58,6 +58,15 @@ Updated: 2026-10-05 (duplicate-DOI merge; print years, front-matter cleanup, HTM
   `make merge-duplicates-apply`, then `make dashboard`.
 - HTML dashboard: `make dashboard` writes `reports/dashboard.html`.
 
+## Fallback resolution (2026-10-06)
+
+- An unlimited `make pdfs` ran `resolve-fallbacks` over 57,046 articles. Until ~03:30 it found
+  496 PDFs (oa 278, nber 124, arxiv 50, plus 44 SSRN); then OpenAlex rate-limited every
+  lookup (12 min of retries per article). Fixed: `make pdfs` passes `FALLBACK_BATCH=200`,
+  fully checked articles are skipped before the limit (no 3 s sleep), the run stops after 3
+  rate-limited articles in a row, 429 waits are capped at 60 s, and the OA lookup sends
+  `CITE_HUSTLE_OPENALEX_API_KEY` when set.
+
 ## Not yet verified
 
 - **Cloudflare on the VM passed:** `make smoke-ssrn` worked on the VM (2026-10-05). It cannot

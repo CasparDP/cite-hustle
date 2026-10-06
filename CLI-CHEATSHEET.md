@@ -600,7 +600,7 @@ cite-hustle scrape --limit 100 --delay 70
 cite-hustle download --limit 50
 
 # 7) Try the remaining free PDF sources, then institutional access
-cite-hustle resolve-fallbacks --limit 200
+cite-hustle resolve-fallbacks --limit 200   # stops after 3 rate-limited articles in a row
 cite-hustle institutional --limit 50
 
 # 8) Verify downloaded files

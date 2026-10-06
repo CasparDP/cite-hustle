@@ -579,8 +579,15 @@ def download(ctx, limit, delay, headless, use_selenium, retry_unavailable):
     help="Re-check a (article, source) pair after this many days",
 )
 @click.option("--delay", default=3, type=int, help="Seconds between articles")
+@click.option(
+    "--max-rate-limited",
+    default=3,
+    show_default=True,
+    type=int,
+    help="Stop after this many articles in a row whose lookup a source rate-limited",
+)
 @click.pass_context
-def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
+def resolve_fallbacks(ctx, limit, sources, recheck_days, delay, max_rate_limited):
     """
     Find PDFs for papers SSRN could not provide.
 
@@ -603,19 +610,28 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
     if unknown:
         raise click.BadParameter(f"Unknown sources: {unknown}. Choose from {list(RESOLVERS)}")
 
-    articles = repo.get_articles_without_pdf(limit=limit)
-    if articles.empty:
-        click.echo("✓ No articles pending fallback resolution")
-        return
-
     cutoff = datetime.now() - timedelta(days=recheck_days)
     error_cutoff = datetime.now() - timedelta(days=settings.error_recheck_days)
     already_checked = repo.get_recent_candidate_checks(cutoff, error_cutoff)
+    # Skip articles whose sources were all checked recently before applying the limit,
+    # so every batch makes progress and no time is spent sleeping on them
+    articles = repo.get_articles_without_pdf()
+    todo = articles["doi"].map(lambda d: any((d, s) not in already_checked for s in source_order))
+    articles = articles[todo]
+    pending_total = len(articles)
+    if limit:
+        articles = articles.head(limit)
+    if articles.empty:
+        click.echo("✓ No articles pending fallback resolution")
+        return
     resolvers = {
         name: RESOLVERS[name](threshold=settings.similarity_threshold) for name in source_order
     }
 
-    click.echo(f"🔎 Resolving {len(articles)} articles via {', '.join(source_order)}\n")
+    click.echo(
+        f"🔎 Resolving {len(articles):,} of {pending_total:,} pending articles via "
+        f"{', '.join(source_order)} (prints hits, and progress every 50)\n"
+    )
     found, misses = 0, 0
 
     with httpx.Client(
@@ -633,10 +649,21 @@ def resolve_fallbacks(ctx, limit, sources, recheck_days, delay):
                 found += 1
             else:
                 misses += 1
+            done = found + misses
+            if done % 50 == 0:
+                click.echo(f"  … {done:,}/{len(articles):,} checked, {found} PDFs found")
+            limited = [n for n, r in resolvers.items() if r.rate_limited_streak >= max_rate_limited]
+            if limited:
+                click.echo(
+                    f"\n⚠️  Stopped: {', '.join(limited)} rate-limited {max_rate_limited} "
+                    "articles in a row. Try again later (an OpenAlex API key in .env, "
+                    "CITE_HUSTLE_OPENALEX_API_KEY, raises the limit)."
+                )
+                break
             # arXiv asks for ~3s between requests; --delay covers all sources
             time_module.sleep(delay)
 
-    click.echo(f"\n✓ Fallback resolution complete: {found} PDFs found, {misses} without a source")
+    click.echo(f"\n✓ Fallback resolution done: {found} PDFs found, {misses} without a source")
     if found:
         click.echo("  Run 'cite-hustle verify-pdfs' to verify the new downloads")
 

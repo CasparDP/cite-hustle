@@ -7,6 +7,7 @@ RUN   := poetry run cite-hustle
 BATCH          ?= 50
 SCRAPE_DELAY   ?= 30
 DOWNLOAD_DELAY ?= 45
+FALLBACK_BATCH ?= 200
 INGEST_BATCH   ?= 10
 
 # Keep the machine awake during long runs (macOS: caffeinate; Linux: systemd-inhibit)
@@ -89,7 +90,7 @@ download:
 	$(KEEP_AWAKE) $(RUN) download --limit $(BATCH) --delay $(DOWNLOAD_DELAY)
 
 fallbacks:
-	$(RUN) resolve-fallbacks
+	$(RUN) resolve-fallbacks --limit $(FALLBACK_BATCH)
 
 # One slow SSRN batch (search, then PDF), then the free OA/NBER/arXiv fallbacks
 pdfs: scrape download fallbacks

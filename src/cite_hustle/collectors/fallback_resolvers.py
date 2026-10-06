@@ -43,13 +43,21 @@ class BaseResolver:
 
     source = ""
     MAX_RETRIES = 4
+    MAX_429_WAIT_S = 60.0
 
     def __init__(self, threshold: float = 90.0, timeout_s: float = 30.0):
         self.threshold = threshold
         self.timeout_s = timeout_s
+        # Lookups in a row that ended rate-limited; callers stop the run on a streak
+        self.rate_limited_streak = 0
 
     def _get(self, client: httpx.Client, url: str, params: Optional[dict] = None) -> httpx.Response:
-        """GET with backoff on 429/5xx; raises ResolverError when exhausted."""
+        """GET with backoff on 429/5xx; raises ResolverError when exhausted.
+
+        Retries that end on 429 raise ResolverError("rate_limited") and extend
+        rate_limited_streak; any other response resets it.
+        """
+        rate_limited = False
         for attempt in range(self.MAX_RETRIES):
             try:
                 response = client.get(url, params=params)
@@ -60,13 +68,18 @@ class BaseResolver:
                 continue
 
             if response.status_code == 429:
+                rate_limited = True
+                if attempt == self.MAX_RETRIES - 1:
+                    break
                 retry_after = response.headers.get("Retry-After")
                 try:
                     wait = float(retry_after) if retry_after else 10.0 * (2**attempt)
                 except ValueError:
                     wait = 10.0 * (2**attempt)
-                time.sleep(min(wait, 180.0))
+                time.sleep(min(wait, self.MAX_429_WAIT_S))
                 continue
+            rate_limited = False
+            self.rate_limited_streak = 0
 
             if response.status_code in {500, 502, 503, 504}:
                 if attempt == self.MAX_RETRIES - 1:
@@ -76,6 +89,9 @@ class BaseResolver:
 
             return response
 
+        if rate_limited:
+            self.rate_limited_streak += 1
+            raise ResolverError("rate_limited")
         raise ResolverError("max_retries_exceeded")
 
     def resolve(self, client: httpx.Client, article: dict) -> Optional[Candidate]:
@@ -92,9 +108,13 @@ class OAResolver(BaseResolver):
     def resolve(self, client: httpx.Client, article: dict) -> Optional[Candidate]:
         doi = article["doi"].strip().lower()
         url = f"{self.BASE_URL}/works/https://doi.org/{quote(doi, safe='')}"
-        params = {"mailto": settings.crossref_email} if settings.crossref_email else None
+        params = {}
+        if settings.crossref_email:
+            params["mailto"] = settings.crossref_email
+        if settings.openalex_api_key:  # higher daily limit than the anonymous pool
+            params["api_key"] = settings.openalex_api_key
 
-        response = self._get(client, url, params=params)
+        response = self._get(client, url, params=params or None)
         if response.status_code == 404:
             return None
         if response.is_error:
