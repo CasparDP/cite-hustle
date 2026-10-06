@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from cite_hustle import front_matter
+from cite_hustle import abstract_check, front_matter
 from cite_hustle.database.models import DatabaseManager
 from cite_hustle.paths import to_portable
 
@@ -141,6 +141,10 @@ class ArticleRepository:
         error_message: Optional[str] = None,
     ):
         """Insert or update SSRN page data"""
+        if abstract_check.is_ssrn_page_text(abstract):
+            abstract = abstract_check.cut_abstract_from_page_text(abstract)
+        elif abstract_check.is_placeholder(abstract):
+            abstract = None
         self.conn.execute(
             """
             INSERT INTO ssrn_pages
@@ -209,6 +213,8 @@ class ArticleRepository:
 
     def upsert_abstract(self, doi: str, abstract: str, force: bool = False):
         """Insert or update abstract in ssrn_pages, optionally forcing overwrite."""
+        if abstract_check.is_junk(abstract):
+            return  # page text or a publisher placeholder is never an abstract
         if force:
             self.conn.execute(
                 """
@@ -979,7 +985,7 @@ class ArticleRepository:
             counts = {}
             self.conn.execute("BEGIN")
             try:
-                for table in ("ssrn_pages", "pdf_candidates", "processing_log"):
+                for table in ("ssrn_pages", "pdf_candidates", "processing_log", "abstract_checks"):
                     counts[table] = self.conn.execute(
                         f"DELETE FROM {table} WHERE doi IN (SELECT doi FROM _delete_dois)"
                     ).fetchone()[0]
@@ -1164,6 +1170,8 @@ class ArticleRepository:
                         f"INSERT INTO {table} BY NAME "
                         f"SELECT * EXCLUDE (src_doi{', abstract_filled' if table == 'ssrn_pages' else ''}) FROM {new}"
                     )
+                # Checks belong to the old abstracts; the kept DOI is re-checked next run
+                c.execute("DELETE FROM abstract_checks WHERE doi IN (SELECT doi FROM _merge_map)")
                 counts["processing_log_repointed"] = c.execute(
                     """
                     UPDATE processing_log SET doi = m.keep FROM _merge_map m
@@ -1183,6 +1191,65 @@ class ArticleRepository:
         finally:
             for t in ("_merge_map", "_new_ssrn", "_new_pdf", "_new_cand"):
                 c.execute(f"DROP TABLE IF EXISTS {t}")
+
+    def get_abstracts_for_pdf_check(self, rerun: bool = False, limit: Optional[int] = None):
+        """Verified PDFs whose current abstract has no PDF check yet (all of them if rerun)."""
+        query = """
+            SELECT p.doi, p.pdf_file_path, s.abstract
+            FROM pdf_files p
+            JOIN ssrn_pages s ON s.doi = p.doi
+            LEFT JOIN abstract_checks c ON c.doi = p.doi
+            WHERE p.verify_status = 'match' AND coalesce(s.abstract, '') <> ''
+              AND (? OR c.doi IS NULL OR c.compared_with <> 'pdf'
+                   OR c.abstract_md5 <> md5(s.abstract))
+            ORDER BY p.doi
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query, [rerun]).fetchdf()
+
+    def record_abstract_check(
+        self, doi: str, status: str, score: Optional[float], compared_with: str
+    ):
+        """Store a check result tied to the abstract as it is now (its md5)."""
+        self.conn.execute(
+            """
+            INSERT INTO abstract_checks (doi, abstract_md5, status, score, compared_with)
+            SELECT doi, md5(coalesce(abstract, '')), ?, ?, ? FROM ssrn_pages WHERE doi = ?
+            ON CONFLICT (doi) DO UPDATE SET
+                abstract_md5 = EXCLUDED.abstract_md5, status = EXCLUDED.status,
+                score = EXCLUDED.score, compared_with = EXCLUDED.compared_with,
+                checked_at = now()
+        """,
+            [status, score, compared_with, doi],
+        )
+
+    def get_flagged_abstracts(self) -> pd.DataFrame:
+        """Current abstracts whose check did not pass."""
+        return self.conn.execute(
+            """
+            SELECT c.doi, a.journal_name, a.year, a.title, c.status, c.score, c.compared_with,
+                   left(s.abstract, 300) AS abstract_start
+            FROM abstract_checks c
+            JOIN ssrn_pages s ON s.doi = c.doi
+            JOIN articles a ON a.doi = c.doi
+            WHERE c.status <> 'match' AND c.abstract_md5 = md5(coalesce(s.abstract, ''))
+            ORDER BY c.score NULLS FIRST
+        """
+        ).fetchdf()
+
+    def get_junk_abstracts(self) -> pd.DataFrame:
+        """Abstracts that are SSRN page text or a publisher placeholder."""
+        markers = abstract_check._PAGE_TEXT_MARKERS + abstract_check._PLACEHOLDER_MARKERS
+        where = " OR ".join("abstract ILIKE ?" for _ in markers)
+        df = self.conn.execute(
+            f"SELECT doi, abstract FROM ssrn_pages WHERE {where}", [f"%{m}%" for m in markers]
+        ).fetchdf()
+        return df[df["abstract"].map(abstract_check.is_junk)]
+
+    def set_abstract(self, doi: str, abstract: Optional[str]):
+        """Replace (or clear, with None) the stored abstract; repair only."""
+        self.conn.execute("UPDATE ssrn_pages SET abstract = ? WHERE doi = ?", [abstract, doi])
 
     def get_recent_processing(self, limit: int = 10) -> List[Dict]:
         """Get most recent processing log entries."""

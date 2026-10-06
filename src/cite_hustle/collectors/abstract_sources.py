@@ -77,6 +77,24 @@ def backfill_from_crossref_cache(repo: ArticleRepository, cache_dir: Path) -> Co
     return stats
 
 
+def crossref_abstracts_from_cache(cache_dir: Path, dois) -> Dict[str, str]:
+    """CrossRef's own (DOI-exact) abstract per DOI from the cached responses, lowercased keys."""
+    wanted = {doi.lower() for doi in dois}
+    found: Dict[str, str] = {}
+    for cache_file in sorted(cache_dir.glob("cache_*.json")):
+        try:
+            items = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for item in items:
+            doi = (item.get("DOI") or "").lower()
+            if doi in wanted and doi not in found:
+                abstract = crossref_abstract(item)
+                if abstract:
+                    found[doi] = abstract
+    return found
+
+
 class SemanticScholarSource:
     """Semantic Scholar Graph API batch lookup (up to 500 DOIs per request)."""
 

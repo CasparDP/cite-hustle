@@ -67,6 +67,17 @@ Updated: 2026-10-05 (duplicate-DOI merge; print years, front-matter cleanup, HTM
   rate-limited articles in a row, 429 waits are capped at 60 s, and the OA lookup sends
   `CITE_HUSTLE_OPENALEX_API_KEY` when set.
 
+## Abstract checks (2026-10-06)
+
+- `verify-abstracts` (in `make verify` and the pipeline verify stage) checks each abstract
+  against its verified PDF; snapshot: 1,015 of 1,021 match, 6 flagged (published vs
+  working-paper wording), no wrong-paper abstract found.
+- `repair-abstracts` fixes junk abstracts; snapshot dry run: 262 (41 from CrossRef, 11 cut
+  out of SSRN page text, 210 cleared). On the VM: `make repair-abstracts`, then
+  `make repair-abstracts-apply`, then `make abstracts` to refill the cleared ones.
+- Next (signed off): compare abstracts from fuzzy-matched sources (SSRN title match, NBER)
+  with DOI-exact ones for papers without a PDF.
+
 ## Not yet verified
 
 - **Cloudflare on the VM passed:** `make smoke-ssrn` worked on the VM (2026-10-05). It cannot

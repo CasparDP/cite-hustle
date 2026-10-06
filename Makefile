@@ -65,7 +65,8 @@ rebuild-fts:
 
 # ── Data pipeline (individual steps) ─────────────────────────────────────────
 
-.PHONY: collect scrape enrich enrich-year abstracts download fallbacks pdfs verify wiki process wiki-index
+.PHONY: collect scrape enrich enrich-year abstracts download fallbacks pdfs verify wiki process wiki-index \
+        repair-abstracts repair-abstracts-apply
 
 collect:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
@@ -97,6 +98,14 @@ pdfs: scrape download fallbacks
 
 verify:
 	$(RUN) verify-pdfs
+	$(RUN) verify-abstracts
+
+# SSRN page text and publisher placeholders stored as abstracts: dry run, then apply
+repair-abstracts:
+	$(RUN) repair-abstracts
+
+repair-abstracts-apply:
+	$(RUN) repair-abstracts --apply --backup-dir $(CURDIR)/.db-backups
 
 wiki:
 	$(RUN) wiki-ingest --limit $(INGEST_BATCH)

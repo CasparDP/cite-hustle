@@ -540,6 +540,22 @@ cite-hustle cleanup-non-articles --apply
 
 ---
 
+### `verify-abstracts` / `repair-abstracts`
+
+`verify-abstracts` compares each abstract with its verified PDF and flags (never changes)
+those below 0.65; flagged ones go to a CSV in `reports/`. Only new or changed abstracts are
+checked unless `--rerun`. `repair-abstracts` replaces SSRN page text and publisher
+placeholders stored as abstracts; dry run by default, `--apply` backs up first.
+
+```bash
+cite-hustle verify-abstracts
+cite-hustle repair-abstracts
+cite-hustle repair-abstracts --apply
+make abstracts        # refills the cleared ones from DOI-exact sources
+```
+
+---
+
 ### `merge-duplicates`
 
 Merge papers stored under two DOIs onto one DOI (rule in `duplicates.py`). Dry run by
@@ -603,8 +619,9 @@ cite-hustle download --limit 50
 cite-hustle resolve-fallbacks --limit 200   # stops after 3 rate-limited articles in a row
 cite-hustle institutional --limit 50
 
-# 8) Verify downloaded files
+# 8) Verify downloaded files, then that each abstract belongs to its paper
 cite-hustle verify-pdfs
+cite-hustle verify-abstracts
 
 # 9) Search collection
 cite-hustle search "earnings management"

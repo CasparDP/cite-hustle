@@ -37,6 +37,7 @@ cite-hustle/
 │   ├── matching.py            # Shared fuzzy title/author matching helpers
 │   ├── front_matter.py        # Front-matter rule set (collector filter, cleanup, dashboard)
 │   ├── duplicates.py          # Duplicate-DOI rule (merge-duplicates): pages, authors, CrossRef aliases
+│   ├── abstract_check.py      # Abstract-vs-PDF check and junk-abstract rules (verify/repair-abstracts)
 │   ├── dashboard_html.py      # Self-contained HTML dashboard (reports/dashboard.html)
 │   ├── paths.py               # Portable $HOME/... path conversion for DB-stored paths
 │   ├── acquire.py             # Ordered fallback/institutional acquisition orchestration
@@ -150,6 +151,10 @@ poetry run cite-hustle resolve-fallbacks --sources oa --recheck-days 90
 poetry run cite-hustle verify-pdfs
 poetry run cite-hustle verify-pdfs --no-llm          # deterministic only
 poetry run cite-hustle verify-pdfs --rerun-uncertain # re-check gray-zone PDFs
+
+# Does each abstract belong to its paper? Compared with the verified PDF; flags, never changes
+poetry run cite-hustle verify-abstracts            # part of make verify and the pipeline verify stage
+poetry run cite-hustle repair-abstracts            # SSRN page text/placeholders: dry run, then --apply
 
 # Wiki ingestion (deep summaries via process-paper; needs OLLAMA_API_KEY)
 poetry run cite-hustle wiki-ingest --limit 10
@@ -327,6 +332,8 @@ pdf_candidates (doi+source PK, candidate_url, pdf_url, match_score, status, erro
 wiki_pages (doi PK/FK, bib_key UNIQUE, source_page_path, extraction_depth, analyst_model,
             verifier_model, status 'pending'|'ingested'|'flagged'|'failed', error_message, ingested_at)
 pipeline_runs (id PK, run_id, stage, status, detail JSON, started_at, finished_at)
+abstract_checks (doi PK, abstract_md5, status 'match'|'mismatch'|'junk'|'too_short'|'no_pdf_text',
+                 score, compared_with 'pdf', checked_at)  -- valid while abstract_md5 = md5(abstract)
 
 -- FTS indexes (BM25 ranking)
 fts_main_articles (on title)
@@ -478,3 +485,4 @@ poetry run python extract_abstracts_from_html.py
 - **`articles.year` is the citation (print) year** (2026-10): `published-print`, else the issue's print date, else CrossRef's `issued` (online-first) date. Re-collecting updates the year (`ON CONFLICT ... year = EXCLUDED.year`). CrossRef's date filter matches the earliest date, so a paper is found under its online year: `make update` covers three years, and `make refresh-metadata` re-fetches everything. `idx_articles_year` was dropped because DuckDB rejected year updates on referenced rows.
 - **Front matter is filtered and removed** (2026-10): one anchored whole-title rule set in `front_matter.py` (plus issue-level DOIs) drives the collector filter, `cleanup-non-articles`, and the dashboard. "Discussion", "Comment", "Reply", "Dialogue", "Correspondence", "Introduction" are kept. The earlier "title repeated >= 3 times" heuristic was rejected: it also matched real papers stored under several DOIs.
 - **Duplicate DOIs are merged, not deleted blindly** (2026-10): papers under two DOIs (JSTOR beside the publisher DOI for Journal of Finance; old/new DOI formats for AMR, AEA, Econometrica, JoM; Elsevier beside SAGE for JoM; MIT beside OUP for QJE) are merged by `merge-duplicates`. Start pages separate a paper from its corrigendum or the authors' reply, which share title and authors. CrossRef moved DOI ownership with the journals, so "publisher DOI" means the journal's current prefix, not the prefix's registrant. CrossRef itself has made many JSTOR (JF) and Elsevier (JoM) DOIs aliases of the publisher DOI (301) and no longer lists them; those pairs are proven by the redirect. Pairs without page data or alias proof are listed, never merged. Snapshot test (pre-refresh copy, after front-matter cleanup, partly refreshed cache): 2,141 groups merged, 2,162 articles removed, none with a PDF or wiki page, 6,418 `processing_log` rows re-pointed, 579 CrossRef aliases, no new orphans, 9 s. CrossRef changes aliases over time (a JEL DOI that was primary in the morning redirected by the afternoon), so chains are followed.
+- **Abstracts are checked against the paper** (2026-10): `verify-abstracts` compares each abstract with its verified PDF (first 5 pages, since working-paper PDFs open with cover sheets; spaces removed, since pypdf sometimes drops them). Threshold 0.65 share of content words: on 1,021 verified pairs no wrong-paper pair from the same journal reached it (max 0.62), and 1,015 true pairs passed; the 6 below were published abstracts versus NBER/arXiv working-paper versions. Flagged abstracts are listed, never changed. No false friend was found. The real problem was junk: 262 SSRN page-text abstracts ("Download This PaperOpen PDF...", from the BeautifulSoup fallbacks in `extract_abstracts_from_html.py`) and publisher placeholders (Cambridge previews, JSTOR terms of use). `repair-abstracts` replaces them (CrossRef's DOI-exact abstract, else the abstract cut out of the page text, else cleared for `make abstracts`); the repository refuses such text from any source. NBER abstracts ending in NBER's "may download this paper without additional charge" sentence are valid and left alone.

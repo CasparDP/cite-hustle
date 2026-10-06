@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from typing import Optional
 from tqdm import tqdm
 
+from cite_hustle.abstract_check import is_junk
 from cite_hustle.config import settings
 from cite_hustle.database.models import DatabaseManager
 from cite_hustle.database.repository import ArticleRepository
@@ -247,6 +248,8 @@ def main():
         
         # Extract abstract
         abstract = process_html_file(html_file_path)
+        if abstract and is_junk(abstract):  # SSRN page text, not the abstract
+            abstract = None
         
         if abstract:
             stats['success'] += 1

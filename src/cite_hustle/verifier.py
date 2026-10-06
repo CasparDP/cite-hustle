@@ -49,13 +49,13 @@ class PDFVerifier:
 
     # --- text extraction -------------------------------------------------
     @staticmethod
-    def extract_head_text(pdf_path: Path) -> Optional[str]:
+    def extract_head_text(pdf_path: Path, pages: int = HEAD_PAGES) -> Optional[str]:
         """Text of the first pages, or None if unreadable (e.g. scanned)."""
         from pypdf import PdfReader
 
         try:
             reader = PdfReader(pdf_path)
-            text = " ".join((page.extract_text() or "") for page in reader.pages[:HEAD_PAGES])
+            text = " ".join((page.extract_text() or "") for page in reader.pages[:pages])
         except Exception:
             return None
         text = " ".join(text.split())

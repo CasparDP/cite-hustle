@@ -717,6 +717,139 @@ def verify_pdfs(ctx, limit, model, no_llm, rerun_uncertain):
     )
 
 
+@main.command("verify-abstracts")
+@click.option("--limit", default=None, type=int, help="Limit number of abstracts to check")
+@click.option("--rerun", is_flag=True, help="Re-check abstracts that already have a check")
+@click.option(
+    "--report",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CSV of flagged abstracts (default: reports dir)",
+)
+@click.pass_context
+def verify_abstracts(ctx, limit, rerun, report):
+    """
+    Check that each abstract belongs to its paper, against the verified PDF.
+
+    Share of the abstract's content words found in the PDF's first pages, ignoring
+    spaces (abstract_check.py). Below the threshold the abstract is flagged and listed;
+    it is never changed. Only new or changed abstracts are checked unless --rerun.
+    """
+    from collections import Counter
+    from datetime import datetime
+
+    import pandas as pd
+
+    from cite_hustle import abstract_check as ac
+    from cite_hustle.paths import expand
+    from cite_hustle.verifier import PDFVerifier
+
+    repo = ctx.obj["repo"]
+    rows = repo.get_abstracts_for_pdf_check(rerun=rerun, limit=limit)
+    click.echo(f"Checking {len(rows):,} abstracts against their verified PDFs")
+    counts = Counter()
+    for row in rows.itertuples():
+        score = None
+        if ac.is_junk(row.abstract):
+            status = "junk"
+        else:
+            text = PDFVerifier.extract_head_text(expand(row.pdf_file_path), pages=ac.PDF_PAGES)
+            score = ac.overlap(row.abstract, text)
+            if text is None:
+                status = "no_pdf_text"
+            elif score is None:
+                status = "too_short"
+            else:
+                status = "match" if score >= ac.MATCH_THRESHOLD else "mismatch"
+        repo.record_abstract_check(row.doi, status, score, "pdf")
+        counts[status] += 1
+    click.echo("  " + ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())))
+
+    flagged = repo.get_flagged_abstracts()
+    if flagged.empty:
+        click.echo("✓ No flagged abstracts")
+        return
+    report = report or settings.reports_dir / f"abstract-checks-{datetime.now():%Y%m%d-%H%M%S}.csv"
+    flagged.to_csv(report, index=False)
+    click.echo(f"⚠️  {len(flagged):,} flagged abstracts (all checks so far): {report}")
+    for row in flagged.head(20).itertuples():
+        score = "" if pd.isna(row.score) else f"{row.score:.2f}"
+        click.echo(f"  {row.status:11} {score:>4}  {row.doi}  {str(row.title)[:60]}")
+
+
+@main.command("repair-abstracts")
+@click.option("--apply", is_flag=True, help="Replace the abstracts (default: dry run)")
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".db-backups"),
+    show_default=True,
+    help="Where the pre-repair DB copy goes",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CrossRef response cache (default: settings cache dir)",
+)
+@click.pass_context
+def repair_abstracts(ctx, apply, backup_dir, cache_dir):
+    """
+    Replace SSRN page text and publisher placeholders stored as abstracts.
+
+    Takes the DOI-exact CrossRef abstract from the local cache; else, for SSRN page
+    text, the abstract cut out of it; else clears it so `make abstracts` (DOI-exact
+    sources) can fill it.
+    """
+    import shutil
+    from collections import Counter
+    from datetime import datetime
+
+    from cite_hustle import abstract_check as ac
+    from cite_hustle.collectors.abstract_sources import crossref_abstracts_from_cache
+
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+    junk = repo.get_junk_abstracts()
+    crossref = crossref_abstracts_from_cache(cache_dir or settings.cache_dir, junk["doi"])
+    plan = []
+    for row in junk.itertuples():
+        new, action = crossref.get(row.doi.lower()), "crossref"
+        if not new and ac.is_ssrn_page_text(row.abstract):
+            new, action = ac.cut_abstract_from_page_text(row.abstract), "cut_from_page_text"
+        if not new:
+            action = "clear"
+        plan.append((row.doi, action, new, row.abstract))
+    counts = Counter(action for _, action, _, _ in plan)
+    click.echo(
+        f"Junk abstracts: {len(plan):,} ("
+        + ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items()))
+        + ")"
+    )
+    for doi, action, new, old in plan[:10]:
+        click.echo(f"  {action:18} {doi}: {old[:50]!r} -> {(new or '')[:60]!r}")
+
+    if not apply:
+        click.echo("\nDry run: nothing changed. Re-run with --apply.")
+        return
+    if not plan:
+        return
+
+    db.conn.execute("CHECKPOINT")
+    db_file = Path(db.db_path)  # the file this connection opened
+    backup = backup_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_file, backup / db_file.name)
+    click.echo(f"\nBackup: {backup / db_file.name}")
+
+    for doi, action, new, _ in plan:
+        repo.set_abstract(doi, new)
+        repo.log_processing(doi, "repair_abstract", action)
+    click.echo(f"Repaired {len(plan):,} abstracts. Then: make abstracts (fills the cleared ones)")
+    db.create_fts_indexes()
+    click.echo("✓ FTS indexes rebuilt")
+
+
 @main.command("wiki-ingest")
 @click.option(
     "--limit", default=None, type=int, help="Papers per run (default: config wiki_ingest_batch)"
@@ -852,7 +985,7 @@ def pipeline(ctx, profile, stages_csv, year, report):
         "download": lambda: ctx.invoke(download),
         "fallbacks": lambda: ctx.invoke(resolve_fallbacks, limit=settings.fallback_batch),
         "institutional": lambda: ctx.invoke(institutional, limit=settings.institutional_batch),
-        "verify": lambda: ctx.invoke(verify_pdfs),
+        "verify": lambda: (ctx.invoke(verify_pdfs), ctx.invoke(verify_abstracts)),
         "ingest": lambda: ctx.invoke(wiki_ingest),
         "index": lambda: ctx.invoke(wiki_index),
         "fts": lambda: ctx.invoke(rebuild_fts),

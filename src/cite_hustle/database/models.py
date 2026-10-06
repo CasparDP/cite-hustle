@@ -50,8 +50,27 @@ class DatabaseManager:
             # which violates the foreign keys on articles, so re-collected years could
             # not be corrected. The index bought nothing on ~80k rows. Idempotent.
             self.conn.execute("DROP INDEX IF EXISTS idx_articles_year")
+            # Migration (2026-10): table added after the runner's DB was created. Idempotent.
+            self._create_abstract_checks()
 
         return self.conn
+
+    def _create_abstract_checks(self):
+        """Does the stored abstract belong to the paper? (abstract_check.py)
+
+        A row is valid only while abstract_md5 equals md5 of the current
+        ssrn_pages.abstract. No foreign key: cleanup and merge delete rows themselves.
+        """
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS abstract_checks (
+                doi VARCHAR PRIMARY KEY,
+                abstract_md5 VARCHAR,
+                status VARCHAR,
+                score DOUBLE,
+                compared_with VARCHAR,
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
     
     def initialize_schema(self):
         """Create tables with proper schema"""
@@ -168,6 +187,8 @@ class DatabaseManager:
                 FOREIGN KEY (doi) REFERENCES articles(doi)
             );
         """)
+
+        self._create_abstract_checks()
 
         # Pipeline run/stage bookkeeping
         self.conn.execute("""
