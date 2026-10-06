@@ -1,6 +1,5 @@
 """Command-line interface for cite-hustle"""
 
-import asyncio
 import sys
 from pathlib import Path
 
@@ -316,8 +315,8 @@ def scrape(ctx, limit, delay, threshold, headless):
 @click.option("--limit", default=None, type=int, help="Limit number of articles to enrich")
 @click.option("--year-start", default=None, type=int, help="Start year filter")
 @click.option("--year-end", default=None, type=int, help="End year filter")
-@click.option("--concurrency", default=3, type=int, help="Concurrent OpenAlex requests")
-@click.option("--delay", default=0.0, type=float, help="Delay between OpenAlex requests (seconds)")
+@click.option("--concurrency", default=3, type=int, hidden=True, help="Ignored (batched now)")
+@click.option("--delay", default=1.0, type=float, help="Seconds between batches of 50 DOIs")
 @click.option("--force", is_flag=True, help="Overwrite existing abstracts")
 @click.option(
     "--print-abstracts", default=0, type=int, help="Print the most recent enriched abstracts"
@@ -338,18 +337,24 @@ def enrich_openalex(
     skip_fts_rebuild,
 ):
     """
-    Enrich missing abstracts using OpenAlex.
+    Enrich missing abstracts using OpenAlex (50 DOIs per request).
+
+    Articles OpenAlex answered within 90 days are skipped unless --force. The run
+    stops after 3 batches in a row are rate-limited; Ctrl-C stops it at once.
 
     Examples:
         cite-hustle enrich-openalex --limit 200
-        cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 3
+        cite-hustle enrich-openalex --year-start 2020 --year-end 2024
         cite-hustle enrich-openalex --force --skip-fts-rebuild
     """
     repo = ctx.obj["repo"]
     db = ctx.obj["db"]
 
     pending = repo.get_articles_missing_abstract(
-        limit=limit, year_start=year_start, year_end=year_end
+        limit=limit,
+        year_start=year_start,
+        year_end=year_end,
+        skip_stage=None if force else "enrich_openalex",
     )
 
     if pending.empty:
@@ -359,24 +364,22 @@ def enrich_openalex(
     click.echo(f"\n{'=' * 60}")
     click.echo("📚 ENRICHING ABSTRACTS (OPENALEX)")
     click.echo(f"{'=' * 60}")
-    click.echo(f"Candidates: {len(pending)}")
-    click.echo(f"Concurrency: {concurrency}")
-    click.echo(f"Delay: {delay} seconds")
+    click.echo(f"Candidates: {len(pending):,} ({(len(pending) + 49) // 50:,} requests)")
+    click.echo(f"Delay: {delay} seconds between requests")
     click.echo(f"Force overwrite: {'Yes' if force else 'No'}")
     click.echo(f"{'=' * 60}\n")
 
-    enricher = OpenAlexEnricher(repo, concurrency=concurrency, delay_s=delay)
-    stats = asyncio.run(enricher.enrich_missing_abstracts(pending.to_dict("records"), force=force))
+    enricher = OpenAlexEnricher(repo, delay_s=delay, log=click.echo)
+    stats = enricher.enrich_missing_abstracts(pending.to_dict("records"), force=force)
 
     click.echo(f"\n{'=' * 60}")
     click.echo("✓ ENRICHMENT COMPLETE")
     click.echo(f"{'=' * 60}")
     click.echo(f"Total candidates: {stats['total']}")
     click.echo(f"✓ Updated: {stats['updated']}")
-    click.echo(f"⚠️  Not found: {stats['not_found']}")
-    click.echo(f"⚠️  Empty abstracts: {stats['empty_abstract']}")
+    click.echo(f"⚠️  No (usable) abstract in OpenAlex: {stats['no_abstract']}")
     click.echo(f"⚠️  Invalid DOIs: {stats['invalid_doi']}")
-    click.echo(f"✗ Failed: {stats['failed']}")
+    click.echo(f"✗ Failed (retried next run): {stats['failed']}")
 
     if print_abstracts and stats["updated"] > 0:
         abstracts = repo.get_recent_openalex_abstracts(limit=print_abstracts)
@@ -1121,9 +1124,7 @@ def pipeline(ctx, profile, stages_csv, year, report):
             skip_fts_rebuild=True,
         ),
         "scrape": lambda: ctx.invoke(scrape, delay=settings.crawl_delay),
-        "enrich": lambda: ctx.invoke(
-            enrich_openalex, year_start=target_year, year_end=target_year, concurrency=8
-        ),
+        "enrich": lambda: ctx.invoke(enrich_openalex, year_start=target_year, year_end=target_year),
         "download": lambda: ctx.invoke(download),
         "fallbacks": lambda: ctx.invoke(resolve_fallbacks, limit=settings.fallback_batch),
         "institutional": lambda: ctx.invoke(institutional, limit=settings.institutional_batch),

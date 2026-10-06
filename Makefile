@@ -76,15 +76,15 @@ scrape:
 	$(KEEP_AWAKE) $(RUN) scrape --limit $(BATCH) --delay $(SCRAPE_DELAY)
 
 enrich:
-	$(RUN) enrich-openalex --concurrency 8
+	$(RUN) enrich-openalex
 
 enrich-year:
-	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
+	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR)
 
 # All abstract sources, cheapest first; each fills only missing abstracts
 abstracts:
 	$(RUN) enrich-abstracts --source crossref --skip-fts-rebuild
-	$(RUN) enrich-openalex --concurrency 3 --skip-fts-rebuild
+	$(RUN) enrich-openalex --skip-fts-rebuild
 	$(KEEP_AWAKE) $(RUN) enrich-abstracts --source s2 --source nber
 
 download:
@@ -169,7 +169,7 @@ merge-duplicates-apply:
 update-full:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR) --force
 	$(KEEP_AWAKE) $(RUN) scrape --limit $(BATCH) --delay $(SCRAPE_DELAY)
-	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR) --concurrency 8
+	$(RUN) enrich-openalex --year-start $(YEAR) --year-end $(YEAR)
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
 

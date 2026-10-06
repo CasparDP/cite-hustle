@@ -134,7 +134,7 @@ poetry run cite-hustle search "Smith" --author
 
 # Enrich missing abstracts from OpenAlex (async, no browser needed)
 poetry run cite-hustle enrich-openalex --limit 200
-poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8
+poetry run cite-hustle enrich-openalex --year-start 2020 --year-end 2024   # 50 DOIs per request
 poetry run cite-hustle enrich-openalex --force --skip-fts-rebuild
 
 # More abstract sources: CrossRef cache (no API), Semantic Scholar batch, NBER landing pages
@@ -358,6 +358,7 @@ fts_main_ssrn_pages (on abstract)
 | Collect shows "already in database" but missing new papers | Use `--force` flag to clear cache and re-fetch |
 | Running collect without `--force` skips the year silently | Two independent blocks: (1) DB year-count check, (2) `cache_{issn}_{year}.json` file -- both bypassed by `--force` |
 | `resolve-fallbacks` looks stuck, or stops with "rate-limited 3 articles in a row" | It prints only hits plus progress every 50. Run it in batches (`make pdfs` uses `FALLBACK_BATCH=200`); unlimited, it covers every article without a PDF (57k after the 2026-10 backfill). OpenAlex rate-limited the anonymous pool after ~2,000 lookups (2026-10-06), and each article then cost 12 min of retries; the run now stops on a streak. Wait, or set `CITE_HUSTLE_OPENALEX_API_KEY` |
+| `make abstracts` / `enrich-openalex` hangs or cannot be stopped | Fixed 2026-10-06: it sent one OpenAlex request per article (~20k) and retried every rate-limited one for minutes inside one async job. Now 50 DOIs per request, a stop after 3 rate-limited batches in a row, a plain loop (Ctrl-C works), and DOIs OpenAlex answered skipped for 90 days. A stuck old run: `pkill -9 -f "cite-hustle enrich"`, then `make recover-db` |
 | `enrich-openalex` shows thousands of candidates unexpectedly | Candidates = ALL articles for that year missing abstracts, not just newly added ones -- use `make enrich-year` separately, not inline with collect |
 | Elsevier/ScienceDirect institutional downloads fail (`cra_js_challenge`, `download_timeout`, or `no_pdf_link`) | Known limitation (2026-08): a human-assisted SB-UC run downloaded via `/pdfft`, but a fresh unattended run with the same profile was challenged again. The API also requires an Elsevier-issued key; eduVPN alone is insufficient. No autonomous Elsevier implementation is retained. Wiley/OUP remain working; use `export-pdfgrabba --dry-run` and pdfgrabba's semi-interactive workflow for terminal residuals |
 | `export-pdfgrabba` refuses a manifest | The exporter intentionally rejects invalid/non-list JSON, duplicate normalized DOIs, absent parent directories, and missing manifests without `--create`. It opens DuckDB read-only and must not run while pdfgrabba is rewriting the same manifest |

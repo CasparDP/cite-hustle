@@ -81,6 +81,15 @@ Updated: 2026-10-05 (duplicate-DOI merge; print years, front-matter cleanup, HTM
 - VM order: `make repair-abstracts` / `-apply`, `make abstracts`, `make verify`,
   `make cross-check-abstracts` (review CSV in reports/) / `-apply`.
 
+## OpenAlex enrichment (2026-10-06)
+
+- `make abstracts` hung: `enrich-openalex` sent one request per article (~20k), exhausted the
+  keyed allowance, and retried every 429 inside one async job (Ctrl-C did not stop it).
+  Rewritten: 50 DOIs per request (`OpenAlexBatchSource`), stop after 3 rate-limited batches,
+  plain loop, `no_match` logged so answered DOIs are skipped for 90 days, biographies and
+  citation headers not stored. Live check: the remaining candidates are mostly recent
+  Elsevier/AOM/SAGE papers whose abstracts OpenAlex does not carry.
+
 ## Not yet verified
 
 - **Cloudflare on the VM passed:** `make smoke-ssrn` worked on the VM (2026-10-05). It cannot

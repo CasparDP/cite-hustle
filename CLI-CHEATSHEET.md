@@ -192,7 +192,7 @@ Enrich missing abstracts using OpenAlex.
 
 ```bash
 cite-hustle enrich-openalex --limit 200
-cite-hustle enrich-openalex --year-start 2020 --year-end 2024 --concurrency 8 --delay 0.5
+cite-hustle enrich-openalex --year-start 2020 --year-end 2024
 cite-hustle enrich-openalex --force
 cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 ```
@@ -202,7 +202,7 @@ cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 - `--limit <n>` - Limit number of articles to enrich (default: all missing)
 - `--year-start <year>` - Start year filter (optional)
 - `--year-end <year>` - End year filter (optional)
-- `--concurrency <n>` - Concurrent OpenAlex requests (default: `3`)
+- 50 DOIs per request; DOIs OpenAlex answered within 90 days are skipped (unless `--force`); the run stops after 3 rate-limited batches in a row
 - `--delay <seconds>` - Delay between OpenAlex requests (default: `0`)
 - `--force` - Overwrite existing abstracts
 - `--print-abstracts <n>` - Print the most recent enriched abstracts
