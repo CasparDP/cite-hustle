@@ -203,7 +203,7 @@ cite-hustle enrich-openalex --limit 50 --print-abstracts 5
 - `--year-start <year>` - Start year filter (optional)
 - `--year-end <year>` - End year filter (optional)
 - 50 DOIs per request; DOIs OpenAlex answered within 90 days are skipped (unless `--force`); the run stops after 3 rate-limited batches in a row
-- `--delay <seconds>` - Delay between OpenAlex requests (default: `0`)
+- `--delay <seconds>` - Delay between batch requests (default: `1`)
 - `--force` - Overwrite existing abstracts
 - `--print-abstracts <n>` - Print the most recent enriched abstracts
 - `--skip-fts-rebuild` - Skip rebuilding search indexes after enrichment
