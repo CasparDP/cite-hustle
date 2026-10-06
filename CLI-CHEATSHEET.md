@@ -552,6 +552,8 @@ cite-hustle verify-abstracts
 cite-hustle repair-abstracts
 cite-hustle repair-abstracts --apply
 make abstracts        # refills the cleared ones from DOI-exact sources
+cite-hustle cross-check-abstracts           # SSRN/NBER vs DOI-exact abstracts (API calls)
+cite-hustle cross-check-abstracts --apply   # replaces mismatches, backs up first
 ```
 
 ---

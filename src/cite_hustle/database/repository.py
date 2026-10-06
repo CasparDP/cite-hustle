@@ -1224,6 +1224,29 @@ class ArticleRepository:
             [status, score, compared_with, doi],
         )
 
+    def get_abstracts_for_source_check(self, rerun: bool = False, limit: Optional[int] = None):
+        """Abstracts from fuzzy-matched sources (SSRN title match, NBER) without a current check.
+
+        A current PDF check takes precedence, so those abstracts are not re-checked here.
+        """
+        query = """
+            SELECT s.doi, s.abstract, a.title
+            FROM ssrn_pages s
+            JOIN articles a ON a.doi = s.doi
+            LEFT JOIN abstract_checks c ON c.doi = s.doi
+            WHERE coalesce(s.abstract, '') <> ''
+              AND (s.ssrn_url IS NOT NULL OR EXISTS (
+                    SELECT 1 FROM processing_log l WHERE l.doi = s.doi
+                      AND l.stage = 'abstract_nber' AND l.status = 'success'))
+              AND (? OR c.doi IS NULL OR c.abstract_md5 <> md5(s.abstract)
+                   -- sources gain abstracts over time: look again after a month
+                   OR (c.status = 'no_comparator' AND c.checked_at < now() - INTERVAL 30 DAY))
+            ORDER BY s.doi
+        """
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        return self.conn.execute(query, [rerun]).fetchdf()
+
     def get_flagged_abstracts(self) -> pd.DataFrame:
         """Current abstracts whose check did not pass."""
         return self.conn.execute(
@@ -1233,7 +1256,8 @@ class ArticleRepository:
             FROM abstract_checks c
             JOIN ssrn_pages s ON s.doi = c.doi
             JOIN articles a ON a.doi = c.doi
-            WHERE c.status <> 'match' AND c.abstract_md5 = md5(coalesce(s.abstract, ''))
+            WHERE c.status NOT IN ('match', 'replaced', 'no_comparator')
+              AND c.abstract_md5 = md5(coalesce(s.abstract, ''))
             ORDER BY c.score NULLS FIRST
         """
         ).fetchdf()

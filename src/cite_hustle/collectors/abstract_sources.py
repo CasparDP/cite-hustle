@@ -137,6 +137,54 @@ class SemanticScholarSource:
         raise ResolverError(f"{error} after {self.MAX_ATTEMPTS} attempts")
 
 
+class OpenAlexBatchSource:
+    """OpenAlex works filtered by up to 50 DOIs per request (DOI-exact abstracts)."""
+
+    URL = "https://api.openalex.org/works"
+    BATCH_SIZE = 50
+    MAX_ATTEMPTS = 5
+
+    def __init__(self, client: Optional[httpx.Client] = None):
+        self.client = client or httpx.Client(timeout=60)
+
+    def fetch(self, dois: List[str]) -> Dict[str, Optional[str]]:
+        """Map each DOI (lowercased) to its abstract, None when OpenAlex has none."""
+        from cite_hustle.collectors.openalex_enricher import OpenAlexEnricher
+
+        # '|' separates filter values and ',' separates filters: such DOIs are skipped
+        usable = [d.lower() for d in dois if "|" not in d and "," not in d]
+        params = {
+            "filter": "doi:" + "|".join(usable),
+            "per-page": self.BATCH_SIZE,
+            "select": "doi,abstract_inverted_index",
+        }
+        if settings.crossref_email:
+            params["mailto"] = settings.crossref_email
+        if settings.openalex_api_key:
+            params["api_key"] = settings.openalex_api_key
+        for attempt in range(self.MAX_ATTEMPTS):
+            try:
+                response = self.client.get(self.URL, params=params)
+            except httpx.TransportError as exc:
+                error = f"request_error: {exc}"
+            else:
+                if response.status_code == 200:
+                    found: Dict[str, Optional[str]] = {d: None for d in usable}
+                    for work in response.json().get("results", []):
+                        doi = (work.get("doi") or "").lower().replace("https://doi.org/", "")
+                        text = OpenAlexEnricher.reconstruct_abstract(
+                            work.get("abstract_inverted_index")
+                        )
+                        if doi in found:
+                            found[doi] = clean_abstract(text)
+                    return found
+                if response.status_code != 429 and response.status_code < 500:
+                    raise ResolverError(f"http_{response.status_code}")
+                error = f"http_{response.status_code}"
+            time.sleep(min(5.0 * 2**attempt, 120.0))
+        raise ResolverError(f"{error} after {self.MAX_ATTEMPTS} attempts")
+
+
 class NBERAbstractSource(BaseResolver):
     """NBER working-paper landing page, matched by title search.
 

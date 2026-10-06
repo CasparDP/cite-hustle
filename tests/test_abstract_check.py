@@ -144,3 +144,99 @@ def test_cleanup_and_merge_remove_abstract_checks(repo):
     repo.delete_articles(["10.1/gone"])
     repo.merge_duplicate_articles([("10.1/keep", ["10.2307/drop"])])
     assert repo.conn.execute("SELECT COUNT(*) FROM abstract_checks").fetchone()[0] == 0
+
+
+def test_openalex_batch_source_reconstructs_and_backs_off(monkeypatch):
+    import httpx
+
+    from cite_hustle.collectors import abstract_sources as srcs
+
+    monkeypatch.setattr(srcs.time, "sleep", lambda s: None)
+    words = {}
+    for i, w in enumerate(OTHER.split()):
+        words.setdefault(w, []).append(i)
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.params["filter"])
+        if len(calls) == 1:
+            return httpx.Response(429)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"doi": "https://doi.org/10.1/a", "abstract_inverted_index": words},
+                    {"doi": "https://doi.org/10.1/b", "abstract_inverted_index": None},
+                ]
+            },
+        )
+
+    source = srcs.OpenAlexBatchSource(httpx.Client(transport=httpx.MockTransport(handler)))
+    got = source.fetch(["10.1/A", "10.1/b", "10.1/x|y"])
+    assert got == {"10.1/a": OTHER, "10.1/b": None}
+    assert calls[-1] == "doi:10.1/a|10.1/b"
+
+
+def test_cross_check_replaces_wrong_ssrn_abstract_with_doi_exact(repo, tmp_path):
+    from cite_hustle.cli import commands
+
+    rows = {"10.1/same": ABSTRACT, "10.1/friend": OTHER, "10.1/none": ABSTRACT, "10.1/pdf": OTHER}
+    for doi, abstract in rows.items():
+        add_article(repo, doi, title="Strategic Arbitrage in Segmented Markets")
+        repo.insert_ssrn_page(doi, f"https://ssrn.com/{doi}", None, None, abstract, 90)
+    repo.record_abstract_check("10.1/pdf", "match", 0.9, "pdf")  # a PDF check takes precedence
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    exact = [
+        {"DOI": "10.1/same", "abstract": ABSTRACT},
+        {"DOI": "10.1/friend", "abstract": ABSTRACT},
+    ]
+    (cache / "cache_0000-0000_2024.json").write_text(json.dumps(exact))
+
+    def run(*args):
+        return CliRunner().invoke(
+            commands.cross_check_abstracts,
+            [
+                "--sources",
+                "crossref",
+                "--cache-dir",
+                str(cache),
+                "--report",
+                str(tmp_path / "r.csv"),
+                *args,
+            ],
+            obj={"repo": repo, "db": repo.db},
+        )
+
+    dry = run()
+    assert dry.exit_code == 0, dry.output
+    assert "to check: 3" in dry.output and "match 1, no_comparator 1, replaced 1" in dry.output
+    assert repo.get_ssrn_page_by_doi("10.1/friend")["abstract"] == OTHER  # dry run
+    applied = run("--apply", "--backup-dir", str(tmp_path / "bk"))
+    assert applied.exit_code == 0, applied.output
+    assert repo.get_ssrn_page_by_doi("10.1/friend")["abstract"] == ABSTRACT
+    statuses = dict(repo.conn.execute("SELECT doi, status FROM abstract_checks").fetchall())
+    assert statuses == {
+        "10.1/same": "match",
+        "10.1/friend": "replaced",
+        "10.1/none": "no_comparator",
+        "10.1/pdf": "match",
+    }
+    assert "to check: 0" in run().output
+    assert repo.get_flagged_abstracts().empty
+    repo.conn.execute(
+        "UPDATE abstract_checks SET checked_at = now() - INTERVAL 31 DAY WHERE doi = '10.1/none'"
+    )
+    assert "to check: 1" in run().output  # no comparator a month ago: look again
+
+
+def test_unusable_comparators_are_rejected():
+    title = "Workfare and Human Capital Investment"
+    assert not ac.usable_comparator(title, "Manisha Shah is a Professor of Public Policy at UCLA.")
+    assert not ac.usable_comparator(
+        title, "Jane Doe, Workfare and Human Capital Investment, Journal of Human Resources 56"
+    )
+    assert ac.usable_comparator(title, "We study how workfare programs shift human capital.")
+    # Publisher (CrossRef) abstracts need not repeat a title word
+    assert not ac.usable_comparator("Truncating Optimism", "Consensus estimates matter.")
+    assert ac.usable_comparator("Truncating Optimism", "Consensus estimates matter.", strict=False)

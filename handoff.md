@@ -75,8 +75,11 @@ Updated: 2026-10-05 (duplicate-DOI merge; print years, front-matter cleanup, HTM
 - `repair-abstracts` fixes junk abstracts; snapshot dry run: 262 (41 from CrossRef, 11 cut
   out of SSRN page text, 210 cleared). On the VM: `make repair-abstracts`, then
   `make repair-abstracts-apply`, then `make abstracts` to refill the cleared ones.
-- Next (signed off): compare abstracts from fuzzy-matched sources (SSRN title match, NBER)
-  with DOI-exact ones for papers without a PDF.
+- `cross-check-abstracts` compares SSRN/NBER abstracts with DOI-exact ones and replaces
+  mismatches (signed off). Snapshot, CrossRef only: 1,848 replaced, 13,258 confirmed; the
+  OpenAlex/S2 pass covers ~60% of the ~14,700 rows without a CrossRef abstract.
+- VM order: `make repair-abstracts` / `-apply`, `make abstracts`, `make verify`,
+  `make cross-check-abstracts` (review CSV in reports/) / `-apply`.
 
 ## Not yet verified
 

@@ -777,6 +777,148 @@ def verify_abstracts(ctx, limit, rerun, report):
         click.echo(f"  {row.status:11} {score:>4}  {row.doi}  {str(row.title)[:60]}")
 
 
+@main.command("cross-check-abstracts")
+@click.option(
+    "--apply", is_flag=True, help="Record checks and replace mismatches (default: dry run)"
+)
+@click.option(
+    "--sources",
+    default="crossref,openalex,s2",
+    show_default=True,
+    help="DOI-exact abstract sources to compare against, in order",
+)
+@click.option("--limit", default=None, type=int, help="Limit number of abstracts to check")
+@click.option("--rerun", is_flag=True, help="Re-check abstracts that already have a check")
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".db-backups"),
+    show_default=True,
+    help="Where the pre-apply DB copy goes",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CrossRef response cache (default: settings cache dir)",
+)
+@click.option(
+    "--report",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="CSV of replacements (default: reports dir)",
+)
+@click.pass_context
+def cross_check_abstracts(ctx, apply, sources, limit, rerun, backup_dir, cache_dir, report):
+    """
+    Compare abstracts from fuzzy-matched sources (SSRN, NBER) with a DOI-exact abstract.
+
+    A title match can attach another paper's abstract. Each such abstract is compared
+    with the paper's DOI-exact abstract (CrossRef cache, then OpenAlex, then Semantic
+    Scholar); below the threshold it is replaced by the DOI-exact one. The API lookups
+    run in the dry run too; only --apply writes.
+    """
+    import shutil
+    import time
+    from collections import Counter
+    from datetime import datetime
+
+    import pandas as pd
+
+    from cite_hustle import abstract_check as ac
+    from cite_hustle.collectors.abstract_sources import (
+        OpenAlexBatchSource,
+        SemanticScholarSource,
+        crossref_abstracts_from_cache,
+    )
+    from cite_hustle.collectors.fallback_resolvers import ResolverError
+
+    repo = ctx.obj["repo"]
+    db = ctx.obj["db"]
+    rows = repo.get_abstracts_for_source_check(rerun=rerun, limit=limit)
+    click.echo(f"Abstracts from fuzzy-matched sources to check: {len(rows):,}")
+
+    comparators = {}  # lowercased DOI -> (source, DOI-exact abstract)
+    complete = True  # every source answered for every DOI
+    titles = dict(zip(rows["doi"].str.lower(), rows["title"]))
+    for source in [s.strip() for s in sources.split(",") if s.strip()]:
+        missing = [d for d in rows["doi"] if d.lower() not in comparators]
+        if not missing:
+            break
+        found = {}
+        if source == "crossref":
+            found = crossref_abstracts_from_cache(cache_dir or settings.cache_dir, missing)
+        elif source in ("openalex", "s2"):
+            fetcher = OpenAlexBatchSource() if source == "openalex" else SemanticScholarSource()
+            size = fetcher.BATCH_SIZE
+            for start in range(0, len(missing), size):
+                try:
+                    found.update(fetcher.fetch(missing[start : start + size]))
+                except ResolverError as exc:
+                    click.echo(f"  {source} stopped at {start:,}/{len(missing):,}: {exc}")
+                    complete = False
+                    break
+                time.sleep(1.0)
+        else:
+            raise click.BadParameter(f"Unknown source: {source}")
+        for doi, abstract in found.items():
+            # An unusable abstract from one source leaves room for the next source
+            title = titles.get(doi.lower())
+            if abstract and ac.usable_comparator(title, abstract, strict=source != "crossref"):
+                comparators.setdefault(doi.lower(), (source, abstract))
+        click.echo(f"  {source}: {sum(1 for a in found.values() if a):,} DOI-exact abstracts")
+
+    decisions = []
+    for row in rows.itertuples():
+        source, exact = comparators.get(row.doi.lower(), (None, None))
+        score = ac.overlap(row.abstract, exact) if exact else None
+        if not exact:
+            status = "no_comparator"
+        elif score is None:
+            status = "too_short"
+        else:
+            status = "match" if score >= ac.SOURCE_MATCH_THRESHOLD else "replaced"
+        decisions.append((row.doi, status, score, source, row.abstract, exact))
+    counts = Counter(d[1] for d in decisions)
+    click.echo("  " + ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())))
+
+    replaced = [d for d in decisions if d[1] == "replaced"]
+    if replaced:
+        report = report or (
+            settings.reports_dir / f"abstract-replacements-{datetime.now():%Y%m%d-%H%M%S}.csv"
+        )
+        pd.DataFrame(
+            [(d, round(sc, 3), src, old[:300], new[:300]) for d, _, sc, src, old, new in replaced],
+            columns=["doi", "score", "source", "old_abstract", "new_abstract"],
+        ).to_csv(report, index=False)
+        click.echo(f"Replacements ({len(replaced):,}): {report}")
+
+    if not apply:
+        click.echo("\nDry run: nothing written. Re-run with --apply.")
+        return
+    if not decisions:
+        return
+
+    db.conn.execute("CHECKPOINT")
+    db_file = Path(db.db_path)  # the file this connection opened
+    backup = backup_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_file, backup / db_file.name)
+    click.echo(f"\nBackup: {backup / db_file.name}")
+
+    for doi, status, score, source, _, exact in decisions:
+        if status == "no_comparator" and not complete:
+            continue  # a source failed: try these again next run
+        if status == "replaced":
+            repo.set_abstract(doi, exact)
+            repo.log_processing(doi, "cross_check_abstract", "replaced", source)
+        repo.record_abstract_check(doi, status, score, source or "none")
+    click.echo(f"Recorded {len(decisions):,} checks, replaced {len(replaced):,} abstracts")
+    if replaced:
+        db.create_fts_indexes()
+        click.echo("✓ FTS indexes rebuilt")
+
+
 @main.command("repair-abstracts")
 @click.option("--apply", is_flag=True, help="Replace the abstracts (default: dry run)")
 @click.option(

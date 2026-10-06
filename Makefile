@@ -66,7 +66,7 @@ rebuild-fts:
 # ── Data pipeline (individual steps) ─────────────────────────────────────────
 
 .PHONY: collect scrape enrich enrich-year abstracts download fallbacks pdfs verify wiki process wiki-index \
-        repair-abstracts repair-abstracts-apply
+        repair-abstracts repair-abstracts-apply cross-check-abstracts cross-check-abstracts-apply
 
 collect:
 	$(RUN) collect --field all --year-start $(YEAR) --year-end $(YEAR)
@@ -106,6 +106,13 @@ repair-abstracts:
 
 repair-abstracts-apply:
 	$(RUN) repair-abstracts --apply --backup-dir $(CURDIR)/.db-backups
+
+# SSRN/NBER abstracts vs a DOI-exact one (CrossRef cache, OpenAlex, S2); mismatches replaced
+cross-check-abstracts:
+	$(RUN) cross-check-abstracts
+
+cross-check-abstracts-apply:
+	$(RUN) cross-check-abstracts --apply --backup-dir $(CURDIR)/.db-backups
 
 wiki:
 	$(RUN) wiki-ingest --limit $(INGEST_BATCH)
