@@ -93,7 +93,9 @@ class Settings(BaseSettings):
         Path.home() / "Github" / "dot-files" / "claude" / "skills" / "process-paper"
     )
     analyst_model: str = "kimi-k2.6:cloud"
-    wiki_verifier_model: str = "gpt-oss:20b:cloud"
+    # 2026-10-23 bake-off (5 papers, 20 seeded errors): glm-5.2 caught 20/20 with the
+    # fewest false flags; gpt-oss:20b caught 8/20 and ran out of budget on 2 papers
+    wiki_verifier_model: str = "glm-5.2:cloud"
     wiki_ingest_batch: int = 10
 
     # PDF-metadata verification
