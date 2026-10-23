@@ -8,7 +8,8 @@ BATCH          ?= 50
 SCRAPE_DELAY   ?= 30
 DOWNLOAD_DELAY ?= 45
 FALLBACK_BATCH ?= 200
-INGEST_BATCH   ?= 10
+# Empty: the CLI default (wiki_ingest_batch locally, everything pending in handoff mode)
+INGEST_BATCH   ?=
 
 # Keep the machine awake during long runs (macOS: caffeinate; Linux: systemd-inhibit)
 ifeq ($(shell uname -s),Darwin)
@@ -65,7 +66,7 @@ rebuild-fts:
 
 # ── Data pipeline (individual steps) ─────────────────────────────────────────
 
-.PHONY: collect scrape enrich enrich-year abstracts download fallbacks pdfs verify wiki process wiki-index \
+.PHONY: collect scrape enrich enrich-year abstracts download fallbacks pdfs verify wiki wiki-work process wiki-index \
         repair-abstracts repair-abstracts-apply cross-check-abstracts cross-check-abstracts-apply
 
 collect:
@@ -115,7 +116,11 @@ cross-check-abstracts-apply:
 	$(RUN) cross-check-abstracts --apply --backup-dir $(CURDIR)/.db-backups
 
 wiki:
-	$(RUN) wiki-ingest --limit $(INGEST_BATCH)
+	$(RUN) wiki-ingest $(if $(INGEST_BATCH),--limit $(INGEST_BATCH))
+
+# Worker side of the split (no DB): process-paper over the runner's handoff manifest
+wiki-work:
+	$(KEEP_AWAKE) $(RUN) wiki-work
 
 # Downloaded PDFs -> verified -> wiki (needs OLLAMA_API_KEY and process-paper)
 process: verify wiki wiki-index

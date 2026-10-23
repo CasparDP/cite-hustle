@@ -10,6 +10,10 @@ SSRN's Cloudflare protection requires a **visible** SeleniumBase UC Chrome windo
 an unlocked desktop, so browser stages run inside the GUI session, never over SSH or
 as a system service.
 
+Wiki summaries (Docling plus two LLM passes, several minutes per paper) can run on a
+second machine, the **wiki worker**, which never opens the database. See
+[Wiki worker (split mode)](#wiki-worker-split-mode).
+
 ## Linux runner (Ubuntu desktop)
 
 1. Install Google Chrome (the `.deb` from google.com/chrome; not the chromium snap),
@@ -42,6 +46,8 @@ as a system service.
    make pdfs                          # slow SSRN batch + free fallbacks (visible browser)
    make process                       # verify PDFs, wiki ingestion, indexes
    ```
+   With a wiki worker, `make process` hands the papers over instead of summarizing
+   them here.
    Stop runs with Ctrl+C (or run them in `tmux` started from the desktop terminal);
    closing the window kills the process and leaves a WAL for `make recover-db`.
    Pace SSRN with `BATCH`, `SCRAPE_DELAY`, `DOWNLOAD_DELAY`. `scrape` exits non-zero
@@ -49,6 +55,51 @@ as a system service.
    wait (hours) before retrying.
 
 The launchd schedule below is macOS-only; no Linux scheduler is set up yet.
+
+## Wiki worker (split mode)
+
+The runner keeps every database write; the worker only reads PDFs and writes wiki
+pages, both through Dropbox. Each `wiki-ingest` on the runner (and the pipeline's
+`ingest` stage) then:
+
+1. records the source pages the worker has written since the last run
+   (`ingested`, `flagged`, or `failed` in `wiki_pages`);
+2. writes `wiki/ingest_manifest.json` with every verified paper that still has no
+   page; their stable bib keys are stored as `pending` first.
+
+The worker runs `cite-hustle wiki-work` (`make wiki-work`): process-paper over that
+manifest, with the models from cite-hustle's config. It skips papers that already
+have a page, so a stopped run resumes where it left off. Papers it has not reached
+stay `pending`, never `failed`.
+
+**Runner:** set `CITE_HUSTLE_WIKI_REMOTE_WORKER=true` in `.env`. The runner then
+no longer needs process-paper (`verify-pdfs` still needs `OLLAMA_API_KEY`).
+`--refresh` and `--keys` are refused in this mode: rebuild pages on the worker with
+process-paper directly.
+
+**Worker (macOS):**
+
+1. Dropbox with `Github Data/cite-hustle/pdfs` and `wiki` synced (about 3 GB of PDFs
+   plus a Docling cache of about 1 MB per paper written next to each PDF; the
+   database folder is not needed).
+2. Clone both repos, `poetry install` in each (see the macOS checklist), and export
+   `OLLAMA_API_KEY` in `~/.zshenv.local` or `~/.config/cite-hustle/env`.
+3. Intel Macs cannot install Docling (no PyTorch wheels): run docling-serve in a
+   container (e.g. Colima) and set `PROCESS_PAPER_DOCLING_URL`; see process-paper's
+   README. Apple Silicon runs Docling natively.
+4. Automatic login for the worker's user, so the LaunchAgents (and a container VM
+   started by `brew services`) come back after a power cut. No unlocked screen is
+   needed; nothing runs in a browser.
+5. Install the LaunchAgent:
+   ```bash
+   cd ~/Github/cite-hustle && ./deploy/install_worker.sh
+   ```
+   `com.citehustle.wikiwork` runs at login and daily at 03:00; launchd never starts
+   a second copy while a run is going, so a multi-day first pass is fine. The
+   wrapper waits up to 10 minutes for docling-serve after a reboot.
+
+Progress: `tail -f ~/Library/Logs/cite-hustle/wikiwork.log` on the worker;
+`cite-hustle status` anywhere once the runner has recorded the pages.
 
 ## Moving to a new runner
 
@@ -168,6 +219,7 @@ profile while it is already open; Chrome profiles are single-process resources.
 
 | Concern | Machine |
 |---|---|
-| All writes (collect, scrape, download, abstracts, verify, wiki) | Runner (Ubuntu VM) |
+| All writes (collect, scrape, download, abstracts, verify, wiki state) | Runner (Ubuntu VM) |
+| Wiki summaries (Docling + LLM passes, no database) | Wiki worker (Intel Mac at home, docling-serve in Colima) |
 | Ad-hoc queries, wiki reading, deep-writer | Any machine (read-only) |
 | Manual maintenance scripts | Runner, outside run windows |

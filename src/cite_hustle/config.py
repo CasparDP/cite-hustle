@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     # fewest false flags; gpt-oss:20b caught 8/20 and ran out of budget on 2 papers
     wiki_verifier_model: str = "glm-5.2:cloud"
     wiki_ingest_batch: int = 10
+    # True on the runner when process-paper runs on another machine (wiki-work):
+    # wiki-ingest then only hands papers over and records the pages that came back
+    wiki_remote_worker: bool = False
 
     # PDF-metadata verification
     pdf_verifier_model: str = "gpt-oss:20b:cloud"

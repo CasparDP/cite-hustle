@@ -72,6 +72,7 @@ make abstracts         # fill missing abstracts: CrossRef cache, OpenAlex, Seman
 make smoke-ssrn        # Cloudflare smoke test on a throwaway DB (visible browser)
 make pdfs              # one slow SSRN batch (search + PDF), then free fallbacks
 make process           # verify PDFs, ingest into the wiki, rebuild indexes
+make wiki-work         # on a wiki worker: summarize the papers the runner handed over
 ```
 
 SSRN pacing is set by `BATCH`, `SCRAPE_DELAY`, and `DOWNLOAD_DELAY` (defaults 50,

@@ -97,7 +97,7 @@ class WikiBridge:
 
     def __init__(
         self,
-        repo: ArticleRepository,
+        repo: ArticleRepository | None,
         wiki_dir: Path,
         pdf_dir: Path,
         process_paper_dir: Path,
@@ -152,7 +152,10 @@ class WikiBridge:
                 }
             )
         manifest_path = self.wiki_dir / MANIFEST_NAME
-        manifest_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        # Write-then-rename: Dropbox (and a worker) never sees a half-written file
+        tmp_path = manifest_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        tmp_path.replace(manifest_path)
         return manifest_path
 
     # --- process-paper invocation -------------------------------------------
@@ -183,6 +186,20 @@ class WikiBridge:
 
         result = subprocess.run(cmd, cwd=self.process_paper_dir)
         return result.returncode
+
+    # --- remote worker handoff ------------------------------------------------
+    def handoff(self, batch) -> tuple[dict[str, str], int]:
+        """Split mode: record pages the worker has written, hand it the rest.
+
+        Papers without a page stay 'pending' (the worker has not reached them
+        yet); reconcile() would mark them failed. Returns (outcomes, n_handed_over).
+        """
+        keys = self.assign_bib_keys(batch)
+        written = {d: k for d, k in keys.items() if (self.sources_dir / f"{k}.md").exists()}
+        outcomes = self.reconcile(written)
+        remaining = batch[~batch["doi"].isin(written.keys())]
+        self.write_manifest(remaining, keys)
+        return outcomes, len(remaining)
 
     # --- reconciliation -------------------------------------------------------
     def reconcile(self, keys: dict[str, str]) -> dict[str, str]:

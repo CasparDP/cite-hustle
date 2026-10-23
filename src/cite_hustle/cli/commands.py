@@ -28,7 +28,7 @@ READ_ONLY_COMMANDS = {
 }
 
 # Commands that never touch the database (usable on any machine, any time).
-NO_DB_COMMANDS = {"request", "login"}
+NO_DB_COMMANDS = {"request", "login", "wiki-work"}
 
 # Seconds a write command waits for another process to release the DB file.
 WRITE_LOCK_WAIT_SECONDS = 120
@@ -1006,14 +1006,23 @@ def repair_abstracts(ctx, apply, backup_dir, cache_dir):
 @click.option(
     "--keys", multiple=True, help="Re-ingest only these bib_keys (implies --refresh candidates)"
 )
+@click.option(
+    "--handoff",
+    is_flag=True,
+    help="Leave process-paper to the worker (wiki-work); default from wiki_remote_worker",
+)
 @click.pass_context
-def wiki_ingest(ctx, limit, dry_run, refresh, keys):
+def wiki_ingest(ctx, limit, dry_run, refresh, keys, handoff):
     """
     Summarize verified PDFs into the research wiki via process-paper.
 
     Selects verified-but-not-ingested PDFs, assigns stable bib_keys, writes the
     ingestion manifest, and runs process-paper (deep extraction + verifier LLM)
     in its own venv. Source pages land in wiki/sources/; indexes are rebuilt.
+
+    With --handoff (or CITE_HUSTLE_WIKI_REMOTE_WORKER=true), process-paper runs
+    on another machine instead: this records the pages the worker has written
+    and writes the manifest of all remaining papers for its next wiki-work run.
     """
     import os
 
@@ -1021,6 +1030,32 @@ def wiki_ingest(ctx, limit, dry_run, refresh, keys):
     from cite_hustle.wiki.indexes import generate_indexes
 
     repo = ctx.obj["repo"]
+    handoff = handoff or settings.wiki_remote_worker
+
+    if handoff:
+        if refresh or keys:
+            click.echo("✗ --refresh/--keys run process-paper; in handoff mode use the worker.")
+            sys.exit(1)
+        bridge = WikiBridge(
+            repo=repo,
+            wiki_dir=settings.wiki_dir,
+            pdf_dir=settings.pdf_storage_dir,
+            process_paper_dir=settings.process_paper_dir,
+            analyst_model=settings.analyst_model,
+            verifier_model=settings.wiki_verifier_model,
+        )
+        batch = repo.get_verified_pdfs_not_ingested(limit=limit)
+        if dry_run:
+            click.echo(f"{len(batch)} verified PDFs not yet ingested (dry run; nothing written)")
+            return
+        outcomes, n_handed = bridge.handoff(batch)
+        counts = {s: sum(1 for v in outcomes.values() if v == s) for s in set(outcomes.values())}
+        click.echo(f"✓ Recorded worker pages: {counts or 'none new'}")
+        click.echo(f"✓ Handed {n_handed} papers to the worker (wiki/ingest_manifest.json)")
+        pages = repo.get_ingested_wiki_pages()
+        written = generate_indexes(pages, settings.wiki_dir)
+        click.echo(f"✓ Index pages regenerated: {', '.join(p.name for p in written)}")
+        return
 
     if not os.environ.get("OLLAMA_API_KEY"):
         click.echo("✗ OLLAMA_API_KEY not set; process-paper needs it. Aborting.")
@@ -1070,6 +1105,42 @@ def wiki_ingest(ctx, limit, dry_run, refresh, keys):
     pages = repo.get_ingested_wiki_pages()
     written = generate_indexes(pages, settings.wiki_dir)
     click.echo(f"✓ Index pages regenerated: {', '.join(p.name for p in written)}")
+
+
+@main.command("wiki-work")
+def wiki_work():
+    """
+    Worker side of the split: run process-paper over the handed-over manifest.
+
+    Never opens the database, so it runs on any machine with process-paper and
+    the Dropbox wiki and pdfs folders. Papers that already have a source page
+    are skipped, so an interrupted run resumes where it stopped. The runner
+    records the new pages on its next wiki-ingest.
+    """
+    import os
+
+    from cite_hustle.wiki.bridge import MANIFEST_NAME, WikiBridge
+
+    manifest_path = settings.wiki_dir / MANIFEST_NAME
+    if not os.environ.get("OLLAMA_API_KEY"):
+        click.echo("✗ OLLAMA_API_KEY not set; process-paper needs it. Aborting.")
+        sys.exit(1)
+    if not (settings.process_paper_dir / "pyproject.toml").exists():
+        click.echo(f"✗ process-paper not found at {settings.process_paper_dir}")
+        sys.exit(1)
+    if not manifest_path.exists():
+        click.echo(f"✗ No manifest at {manifest_path}; run wiki-ingest --handoff on the runner")
+        sys.exit(1)
+
+    bridge = WikiBridge(
+        repo=None,
+        wiki_dir=settings.wiki_dir,
+        pdf_dir=settings.pdf_storage_dir,
+        process_paper_dir=settings.process_paper_dir,
+        analyst_model=settings.analyst_model,
+        verifier_model=settings.wiki_verifier_model,
+    )
+    sys.exit(bridge.run_process_paper(manifest_path, keys=[]))
 
 
 @main.command("pipeline")

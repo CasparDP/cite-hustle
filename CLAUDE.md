@@ -86,7 +86,7 @@ cite-hustle/
 | OpenAlex | `collectors/openalex_enricher.py` | `OpenAlexEnricher` fetches missing abstracts via OpenAlex API (async) |
 | Fallback PDFs | `collectors/fallback_resolvers.py` | `OAResolver`/`NBERResolver`/`ArXivResolver` find PDFs when SSRN fails |
 | PDF Verifier | `verifier.py` | `PDFVerifier` checks PDF matches metadata; quarantines mismatches |
-| Wiki Bridge | `wiki/bridge.py` | `WikiBridge` runs verified PDFs through the process-paper skill (subprocess) |
+| Wiki Bridge | `wiki/bridge.py` | `WikiBridge` runs verified PDFs through the process-paper skill (subprocess), or hands them to a wiki worker (`handoff`) |
 | Pipeline | `pipeline.py` | Profiles, Dropbox/DB preflight guards, lockfile, markdown run reports |
 
 ## Storage Conventions
@@ -161,6 +161,8 @@ poetry run cite-hustle cross-check-abstracts       # SSRN/NBER abstracts vs DOI-
 poetry run cite-hustle wiki-ingest --limit 10
 poetry run cite-hustle wiki-ingest --dry-run
 poetry run cite-hustle wiki-index                    # regenerate index pages only
+poetry run cite-hustle wiki-ingest --handoff         # split mode: record worker pages, hand over the rest
+poetry run cite-hustle wiki-work                     # on the worker (no DB): process-paper over the manifest
 
 # Unattended pipeline (used by launchd on the runner laptop; see deploy/README.md)
 poetry run cite-hustle pipeline --profile monthly
@@ -469,7 +471,8 @@ poetry run python extract_abstracts_from_html.py
 - **HTML content** stored on disk, not in DB (reduces DB size, enables external analysis)
 - **Portable paths** use `$HOME/...` format for cross-machine compatibility
 - **Single writer** (2026-07): the dedicated runner is the only machine that writes to the DB; other machines use read-only commands. See `deploy/README.md`.
-- **Runner is the Ubuntu desktop VM** (2026-10, `ubuntu-vm`, GPU, expires in a few months): it runs everything, including verify and wiki ingestion; the Macs stay read-only. Setup is machine-agnostic (`make doctor`, Linux/macOS checklists in `deploy/README.md`).
+- **Runner is the Ubuntu desktop VM** (2026-10, `ubuntu-vm`, GPU, expires in a few months): it runs every database write, including verify and the wiki state; the Macs stay read-only. Setup is machine-agnostic (`make doctor`, Linux/macOS checklists in `deploy/README.md`).
+- **Wiki summaries run on a wiki worker** (2026-10, an Intel Mac at home with docling-serve in Colima): with `wiki_remote_worker=true` on the runner, `wiki-ingest` records the pages the worker wrote and rewrites `wiki/ingest_manifest.json` with the rest (bib keys stored as `pending` first, so they stay stable); the worker's `wiki-work` runs process-paper over the manifest and never opens the DB (`NO_DB_COMMANDS`). Missing pages stay `pending`, never `failed`. See `deploy/README.md` "Wiki worker".
 - **Verification precedes wiki ingestion**: only `pdf_files.verify_status = 'match'` PDFs are ingested; mismatches are quarantined to `pdfs/quarantine/` and the SSRN path marked unavailable so fallbacks take over.
 - **Wiki lives at** `$HOME/Dropbox/Github Data/cite-hustle/wiki/` in process-paper format (`sources/`, `concepts/`, auto-generated `indexes/`); summaries are produced by the external process-paper skill (deep depth), never by reimplementing it here.
 - **Fallback order** is `oa -> nber -> arxiv` (OA first because it is DOI-exact). The authenticated publisher stage runs last, only after the SSRN/free-source path; do not add unauthenticated paywall scraping.

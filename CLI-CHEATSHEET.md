@@ -473,6 +473,33 @@ retryable status such as `failed`.
 
 ---
 
+## Research Wiki
+
+### `wiki-ingest`
+
+Summarize verified PDFs into `wiki/sources/` via the process-paper skill, then rebuild
+the index pages. Runner-only (writes `wiki_pages`).
+
+```bash
+cite-hustle wiki-ingest --limit 10
+cite-hustle wiki-ingest --dry-run
+cite-hustle wiki-ingest --handoff     # split mode (default with CITE_HUSTLE_WIKI_REMOTE_WORKER=true)
+```
+
+With `--handoff` it runs no process-paper: it records the pages a wiki worker has
+written and rewrites `wiki/ingest_manifest.json` with all remaining papers.
+
+### `wiki-work`
+
+Worker side of the split: process-paper over the handed-over manifest. Never opens
+the database; papers that already have a page are skipped. See `deploy/README.md`.
+
+```bash
+cite-hustle wiki-work
+```
+
+---
+
 ## Search & Inspection
 
 ### `search`
